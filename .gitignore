@@ -6,3 +6,7 @@ venv
 .venv
 hg_access_token.txt
 test_whisperx_run.py
+
+# Local tests & OS cruft
+local_tests/
+.DS_Store

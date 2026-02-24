@@ -16,7 +16,5 @@ build:
     # Pre-download Whisper + VAD models (same as build.sh, without final "cog run python")
     - head -n -1 build.sh | bash
 environment:
-  - "PYTHONUNBUFFERED=1"
-  # Force PyTorch to use its bundled cuDNN; base image may expose an older cuDNN via LD_LIBRARY_PATH
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
 predict: "predict.py:Predictor"
