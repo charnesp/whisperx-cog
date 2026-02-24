@@ -41,6 +41,20 @@ WHISPER_MODEL_HF_IDS = {
 }
 
 
+def _sanitize_error_message(msg: str, max_len: int = 500) -> str:
+    """Avoid logging binary or huge payloads (e.g. multipart body) in exception messages."""
+    if not msg:
+        return msg
+    # Truncate long messages (e.g. request body)
+    if len(msg) > max_len:
+        return msg[:max_len] + "... (truncated)"
+    # If message looks like binary or contains many non-printable chars, omit it
+    non_printable = sum(1 for c in msg if ord(c) < 32 and c not in "\n\r\t")
+    if non_printable > 50 or "\\x" in repr(msg):
+        return "(binary or non-printable data omitted)"
+    return msg
+
+
 def _resolve_input_default(val: Any) -> Any:
     """When predict() is called from Python (not via Cog API), omitted args get the Input()
     object (Pydantic FieldInfo) as value. Return the actual default in that case."""
@@ -91,8 +105,8 @@ class Predictor(BasePredictor):
             default="large-v3-turbo",
             choices=["tiny", "large-v3", "large-v3-turbo"],
         ),
-        language: str = Input(
-            description="ISO code of the language spoken in the audio, specify None to perform language detection",
+        language: str | None = Input(
+            description="ISO code of the language spoken in the audio, omit or null to perform language detection",
             default=None,
         ),
         language_detection_min_prob: float = Input(
@@ -106,11 +120,11 @@ class Predictor(BasePredictor):
             "retries is reached, the most probable language is kept.",
             default=5,
         ),
-        initial_prompt: str = Input(
+        initial_prompt: str | None = Input(
             description="Optional text to provide as a prompt for the first window",
             default=None,
         ),
-        hotwords: str = Input(
+        hotwords: str | None = Input(
             description="Hotwords/hint phrases to the model (e.g. \"WhisperX, PyAnnote, GPU\"); improves recognition of rare/technical terms",
             default=None,
         ),
@@ -127,23 +141,67 @@ class Predictor(BasePredictor):
             default=True,
         ),
         diarization: bool = Input(description="Assign speaker ID labels", default=True),
-        huggingface_access_token: str = Input(
+        huggingface_access_token: str | None = Input(
             description="To enable diarization, please enter your HuggingFace token (read). You need to accept "
             "the user agreement for the models specified in the README.",
             default=None,
         ),
-        min_speakers: int = Input(
-            description="Minimum number of speakers if diarization is activated (leave blank if unknown)",
+        min_speakers: int | None = Input(
+            description="Minimum number of speakers if diarization is activated (omit or null if unknown)",
             default=None,
         ),
-        max_speakers: int = Input(
-            description="Maximum number of speakers if diarization is activated (leave blank if unknown)",
+        max_speakers: int | None = Input(
+            description="Maximum number of speakers if diarization is activated (omit or null if unknown)",
             default=None,
         ),
         debug: bool = Input(
             description="Print out compute/inference times and memory usage information",
             default=False,
         ),
+    ) -> Output:
+        try:
+            return self._run_predict(
+                audio_file=audio_file,
+                whisper_model=whisper_model,
+                language=language,
+                language_detection_min_prob=language_detection_min_prob,
+                language_detection_max_tries=language_detection_max_tries,
+                initial_prompt=initial_prompt,
+                hotwords=hotwords,
+                batch_size=batch_size,
+                temperature=temperature,
+                vad_onset=vad_onset,
+                vad_offset=vad_offset,
+                align_output=align_output,
+                diarization=diarization,
+                huggingface_access_token=huggingface_access_token,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                debug=debug,
+            )
+        except Exception as e:
+            safe_msg = _sanitize_error_message(str(e))
+            raise RuntimeError(f"Prediction failed: {type(e).__name__}: {safe_msg}") from None
+
+    def _run_predict(
+        self,
+        audio_file,
+        whisper_model,
+        language,
+        language_detection_min_prob,
+        language_detection_max_tries,
+        initial_prompt,
+        hotwords,
+        batch_size,
+        temperature,
+        vad_onset,
+        vad_offset,
+        align_output,
+        diarization,
+        huggingface_access_token,
+        min_speakers,
+        max_speakers,
+        debug,
     ) -> Output:
         with torch.inference_mode():
             # Resolve Pydantic FieldInfo → real default when predict() is called from Python
@@ -272,14 +330,21 @@ class Predictor(BasePredictor):
                     )
 
             if diarization:
-                result = diarize(
-                    audio,
-                    result,
-                    debug,
-                    huggingface_access_token,
-                    min_speakers,
-                    max_speakers,
-                )
+                if not huggingface_access_token or not huggingface_access_token.strip():
+                    print(
+                        "Warning: diarization requested but no HuggingFace token provided; skipping diarization. "
+                        "Set huggingface_access_token to enable speaker labels.",
+                        flush=True,
+                    )
+                else:
+                    result = diarize(
+                        audio,
+                        result,
+                        debug,
+                        huggingface_access_token,
+                        min_speakers,
+                        max_speakers,
+                    )
 
             if debug:
                 print(
