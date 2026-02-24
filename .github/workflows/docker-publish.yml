@@ -24,13 +24,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Cog
+        uses: replicate/setup-cog@v2
         with:
-          python-version: "3.11"
-
-      - name: Install Cog
-        run: pip install cog
+          token: ""  # do not authenticate to Replicate; we only push to GHCR
+          cog-version: "v0.16.12"
 
       - name: Set image name (lowercase for GHCR)
         run: echo "IMAGE_NAME=${{ env.REGISTRY }}/$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
@@ -43,7 +41,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build image with Cog
-        run: python -m cog build --progress=plain -t ${{ env.IMAGE_NAME }}:latest -t ${{ env.IMAGE_NAME }}:${{ github.sha }}
+        run: cog build --progress=plain -t ${{ env.IMAGE_NAME }}:latest -t ${{ env.IMAGE_NAME }}:${{ github.sha }}
 
       - name: Push image to GHCR
         run: |
