@@ -30,6 +30,10 @@ jobs:
           token: ""  # do not authenticate to Replicate; we only push to GHCR
           cog-version: "v0.16.12"
 
+      # Use default builder (docker driver) so the image is loaded locally for docker push
+      - name: Use default Docker builder
+        run: docker buildx use default
+
       - name: Set image name (lowercase for GHCR)
         run: echo "IMAGE_NAME=${{ env.REGISTRY }}/$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
