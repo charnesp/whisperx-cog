@@ -1,5 +1,5 @@
 from cog import BasePredictor, Input, Path, BaseModel
-from typing import Any
+from typing import Any, Optional
 from whisperx.audio import N_SAMPLES, log_mel_spectrogram
 
 import gc
@@ -14,19 +14,24 @@ import ffmpeg
 
 compute_type = "float16"  # change to "int8" if low on GPU mem (may reduce accuracy)
 device = "cuda"
-whisper_arch = "./models/faster-whisper-large-v3"
+
+WHISPER_MODEL_PATHS = {
+    "large-v3": "./models/faster-whisper-large-v3",
+    "large-v3-turbo": "./models/faster-whisper-large-v3-turbo",
+}
 
 
 class Output(BaseModel):
     segments: Any
     detected_language: str
+    speaker_embeddings: Optional[dict] = None
 
 
 class Predictor(BasePredictor):
     def setup(self):
-        source_folder = './models/vad'
-        destination_folder = '../root/.cache/torch'
-        file_name = 'whisperx-vad-segmentation.bin'
+        source_folder = "./models/vad"
+        destination_folder = "../root/.cache/torch"
+        file_name = "whisperx-vad-segmentation.bin"
 
         os.makedirs(destination_folder, exist_ok=True)
 
@@ -38,170 +43,238 @@ class Predictor(BasePredictor):
                 shutil.copy(source_file_path, destination_folder)
 
     def predict(
-            self,
-            audio_file: Path = Input(description="Audio file"),
-            language: str = Input(
-                description="ISO code of the language spoken in the audio, specify None to perform language detection",
-                default=None),
-            language_detection_min_prob: float = Input(
-                description="If language is not specified, then the language will be detected recursively on different "
-                            "parts of the file until it reaches the given probability",
-                default=0
-            ),
-            language_detection_max_tries: int = Input(
-                description="If language is not specified, then the language will be detected following the logic of "
-                            "language_detection_min_prob parameter, but will stop after the given max retries. If max "
-                            "retries is reached, the most probable language is kept.",
-                default=5
-            ),
-            initial_prompt: str = Input(
-                description="Optional text to provide as a prompt for the first window",
-                default=None),
-            batch_size: int = Input(
-                description="Parallelization of input audio transcription",
-                default=64),
-            temperature: float = Input(
-                description="Temperature to use for sampling",
-                default=0),
-            vad_onset: float = Input(
-                description="VAD onset",
-                default=0.500),
-            vad_offset: float = Input(
-                description="VAD offset",
-                default=0.363),
-            align_output: bool = Input(
-                description="Aligns whisper output to get accurate word-level timestamps",
-                default=False),
-            diarization: bool = Input(
-                description="Assign speaker ID labels",
-                default=False),
-            huggingface_access_token: str = Input(
-                description="To enable diarization, please enter your HuggingFace token (read). You need to accept "
-                            "the user agreement for the models specified in the README.",
-                default=None),
-            min_speakers: int = Input(
-                description="Minimum number of speakers if diarization is activated (leave blank if unknown)",
-                default=None),
-            max_speakers: int = Input(
-                description="Maximum number of speakers if diarization is activated (leave blank if unknown)",
-                default=None),
-            debug: bool = Input(
-                description="Print out compute/inference times and memory usage information",
-                default=False)
+        self,
+        audio_file: Path = Input(description="Audio file"),
+        whisper_model: str = Input(
+            description="Whisper ASR model: large-v3 (higher accuracy) or large-v3-turbo (faster, less VRAM)",
+            default="large-v3-turbo",
+            choices=["large-v3", "large-v3-turbo"],
+        ),
+        language: str = Input(
+            description="ISO code of the language spoken in the audio, specify None to perform language detection",
+            default=None,
+        ),
+        language_detection_min_prob: float = Input(
+            description="If language is not specified, then the language will be detected recursively on different "
+            "parts of the file until it reaches the given probability",
+            default=0,
+        ),
+        language_detection_max_tries: int = Input(
+            description="If language is not specified, then the language will be detected following the logic of "
+            "language_detection_min_prob parameter, but will stop after the given max retries. If max "
+            "retries is reached, the most probable language is kept.",
+            default=5,
+        ),
+        initial_prompt: str = Input(
+            description="Optional text to provide as a prompt for the first window",
+            default=None,
+        ),
+        hotwords: str = Input(
+            description="Hotwords/hint phrases to the model (e.g. \"WhisperX, PyAnnote, GPU\"); improves recognition of rare/technical terms",
+            default=None,
+        ),
+        batch_size: int = Input(
+            description="Parallelization of input audio transcription", default=64
+        ),
+        temperature: float = Input(
+            description="Temperature to use for sampling", default=0
+        ),
+        vad_onset: float = Input(description="VAD onset", default=0.500),
+        vad_offset: float = Input(description="VAD offset", default=0.363),
+        align_output: bool = Input(
+            description="Aligns whisper output to get accurate word-level timestamps",
+            default=True,
+        ),
+        diarization: bool = Input(description="Assign speaker ID labels", default=True),
+        huggingface_access_token: str = Input(
+            description="To enable diarization, please enter your HuggingFace token (read). You need to accept "
+            "the user agreement for the models specified in the README.",
+            default=None,
+        ),
+        min_speakers: int = Input(
+            description="Minimum number of speakers if diarization is activated (leave blank if unknown)",
+            default=None,
+        ),
+        max_speakers: int = Input(
+            description="Maximum number of speakers if diarization is activated (leave blank if unknown)",
+            default=None,
+        ),
+        debug: bool = Input(
+            description="Print out compute/inference times and memory usage information",
+            default=False,
+        ),
     ) -> Output:
         with torch.inference_mode():
+            whisper_arch = WHISPER_MODEL_PATHS[whisper_model]
             asr_options = {
                 "temperatures": [temperature],
-                "initial_prompt": initial_prompt
+                "initial_prompt": initial_prompt,
+                "hotwords": hotwords if hotwords and hotwords.strip() else None,
             }
 
-            vad_options = {
-                "vad_onset": vad_onset,
-                "vad_offset": vad_offset
-            }
+            vad_options = {"vad_onset": vad_onset, "vad_offset": vad_offset}
 
             audio_duration = get_audio_duration(audio_file)
 
-            if language is None and language_detection_min_prob > 0 and audio_duration > 30000:
+            if (
+                language is None
+                and language_detection_min_prob > 0
+                and audio_duration > 30000
+            ):
                 segments_duration_ms = 30000
 
                 language_detection_max_tries = min(
                     language_detection_max_tries,
-                    math.floor(audio_duration / segments_duration_ms)
+                    math.floor(audio_duration / segments_duration_ms),
                 )
 
-                segments_starts = distribute_segments_equally(audio_duration, segments_duration_ms,
-                                                              language_detection_max_tries)
+                segments_starts = distribute_segments_equally(
+                    audio_duration, segments_duration_ms, language_detection_max_tries
+                )
 
-                print("Detecting languages on segments starting at " + ', '.join(map(str, segments_starts)))
+                print(
+                    "Detecting languages on segments starting at "
+                    + ", ".join(map(str, segments_starts))
+                )
 
-                detected_language_details = detect_language(audio_file, segments_starts, language_detection_min_prob,
-                                                            language_detection_max_tries, asr_options, vad_options)
+                detected_language_details = detect_language(
+                    audio_file,
+                    segments_starts,
+                    language_detection_min_prob,
+                    language_detection_max_tries,
+                    asr_options,
+                    vad_options,
+                    whisper_arch,
+                )
 
                 detected_language_code = detected_language_details["language"]
                 detected_language_prob = detected_language_details["probability"]
                 detected_language_iterations = detected_language_details["iterations"]
 
-                print(f"Detected language {detected_language_code} ({detected_language_prob:.2f}) after "
-                      f"{detected_language_iterations} iterations.")
+                print(
+                    f"Detected language {detected_language_code} ({detected_language_prob:.2f}) after "
+                    f"{detected_language_iterations} iterations."
+                )
 
                 language = detected_language_details["language"]
 
-            start_time = time.time_ns() / 1e6
+            start_time = time.time_ns() / 1e9
 
-            model = whisperx.load_model(whisper_arch, device, compute_type=compute_type, language=language,
-                                        asr_options=asr_options, vad_options=vad_options)
+            model = whisperx.load_model(
+                whisper_arch,
+                device,
+                compute_type=compute_type,
+                language=language,
+                asr_options=asr_options,
+                vad_options=vad_options,
+            )
 
             if debug:
-                elapsed_time = time.time_ns() / 1e6 - start_time
-                print(f"Duration to load model: {elapsed_time:.2f} ms")
+                elapsed_time = time.time_ns() / 1e9 - start_time
+                print(f"Duration to load model: {elapsed_time:.2f} s")
 
-            start_time = time.time_ns() / 1e6
+            start_time = time.time_ns() / 1e9
 
             audio = whisperx.load_audio(audio_file)
 
             if debug:
-                elapsed_time = time.time_ns() / 1e6 - start_time
-                print(f"Duration to load audio: {elapsed_time:.2f} ms")
+                elapsed_time = time.time_ns() / 1e9 - start_time
+                print(f"Duration to load audio: {elapsed_time:.2f} s")
 
-            start_time = time.time_ns() / 1e6
+            start_time = time.time_ns() / 1e9
 
             result = model.transcribe(audio, batch_size=batch_size)
             detected_language = result["language"]
 
             if debug:
-                elapsed_time = time.time_ns() / 1e6 - start_time
-                print(f"Duration to transcribe: {elapsed_time:.2f} ms")
+                elapsed_time = time.time_ns() / 1e9 - start_time
+                print(f"Duration to transcribe: {elapsed_time:.2f} s")
 
             gc.collect()
             torch.cuda.empty_cache()
             del model
 
             if align_output:
-                if detected_language in whisperx.alignment.DEFAULT_ALIGN_MODELS_TORCH or detected_language in whisperx.alignment.DEFAULT_ALIGN_MODELS_HF:
+                if (
+                    detected_language in whisperx.alignment.DEFAULT_ALIGN_MODELS_TORCH
+                    or detected_language in whisperx.alignment.DEFAULT_ALIGN_MODELS_HF
+                ):
                     result = align(audio, result, debug)
                 else:
-                    print(f"Cannot align output as language {detected_language} is not supported for alignment")
+                    print(
+                        f"Cannot align output as language {detected_language} is not supported for alignment"
+                    )
 
             if diarization:
-                result = diarize(audio, result, debug, huggingface_access_token, min_speakers, max_speakers)
+                result = diarize(
+                    audio,
+                    result,
+                    debug,
+                    huggingface_access_token,
+                    min_speakers,
+                    max_speakers,
+                )
 
             if debug:
-                print(f"max gpu memory allocated over runtime: {torch.cuda.max_memory_reserved() / (1024 ** 3):.2f} GB")
+                print(
+                    f"max gpu memory allocated over runtime: {torch.cuda.max_memory_reserved() / (1024 ** 3):.2f} GB"
+                )
 
         return Output(
             segments=result["segments"],
-            detected_language=detected_language
+            detected_language=detected_language,
+            speaker_embeddings=result.get("speaker_embeddings"),
         )
 
 
 def get_audio_duration(file_path):
     probe = ffmpeg.probe(file_path)
-    stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'audio'), None)
-    return float(stream['duration']) * 1000
+    stream = next(
+        (stream for stream in probe["streams"] if stream["codec_type"] == "audio"), None
+    )
+    return float(stream["duration"]) * 1000
 
 
-def detect_language(full_audio_file_path, segments_starts, language_detection_min_prob,
-                    language_detection_max_tries, asr_options, vad_options, iteration=1):
-    model = whisperx.load_model(whisper_arch, device, compute_type=compute_type, asr_options=asr_options,
-                                vad_options=vad_options)
+def detect_language(
+    full_audio_file_path,
+    segments_starts,
+    language_detection_min_prob,
+    language_detection_max_tries,
+    asr_options,
+    vad_options,
+    whisper_arch,
+    iteration=1,
+):
+    model = whisperx.load_model(
+        whisper_arch,
+        device,
+        compute_type=compute_type,
+        asr_options=asr_options,
+        vad_options=vad_options,
+    )
 
     start_ms = segments_starts[iteration - 1]
 
-    audio_segment_file_path = extract_audio_segment(full_audio_file_path, start_ms, 30000)
+    audio_segment_file_path = extract_audio_segment(
+        full_audio_file_path, start_ms, 30000
+    )
 
     audio = whisperx.load_audio(audio_segment_file_path)
 
     model_n_mels = model.model.feat_kwargs.get("feature_size")
-    segment = log_mel_spectrogram(audio[: N_SAMPLES],
-                                  n_mels=model_n_mels if model_n_mels is not None else 80,
-                                  padding=0 if audio.shape[0] >= N_SAMPLES else N_SAMPLES - audio.shape[0])
+    segment = log_mel_spectrogram(
+        audio[:N_SAMPLES],
+        n_mels=model_n_mels if model_n_mels is not None else 80,
+        padding=0 if audio.shape[0] >= N_SAMPLES else N_SAMPLES - audio.shape[0],
+    )
     encoder_output = model.model.encode(segment)
     results = model.model.model.detect_language(encoder_output)
     language_token, language_probability = results[0][0]
     language = language_token[2:-2]
 
-    print(f"Iteration {iteration} - Detected language: {language} ({language_probability:.2f})")
+    print(
+        f"Iteration {iteration} - Detected language: {language} ({language_probability:.2f})"
+    )
 
     audio_segment_file_path.unlink()
 
@@ -212,24 +285,41 @@ def detect_language(full_audio_file_path, segments_starts, language_detection_mi
     detected_language = {
         "language": language,
         "probability": language_probability,
-        "iterations": iteration
+        "iterations": iteration,
     }
 
-    if language_probability >= language_detection_min_prob or iteration >= language_detection_max_tries:
+    if (
+        language_probability >= language_detection_min_prob
+        or iteration >= language_detection_max_tries
+    ):
         return detected_language
 
-    next_iteration_detected_language = detect_language(full_audio_file_path, segments_starts,
-                                                       language_detection_min_prob, language_detection_max_tries,
-                                                       asr_options, vad_options, iteration + 1)
+    next_iteration_detected_language = detect_language(
+        full_audio_file_path,
+        segments_starts,
+        language_detection_min_prob,
+        language_detection_max_tries,
+        asr_options,
+        vad_options,
+        whisper_arch,
+        iteration + 1,
+    )
 
-    if next_iteration_detected_language["probability"] > detected_language["probability"]:
+    if (
+        next_iteration_detected_language["probability"]
+        > detected_language["probability"]
+    ):
         return next_iteration_detected_language
 
     return detected_language
 
 
 def extract_audio_segment(input_file_path, start_time_ms, duration_ms):
-    input_file_path = Path(input_file_path) if not isinstance(input_file_path, Path) else input_file_path
+    input_file_path = (
+        Path(input_file_path)
+        if not isinstance(input_file_path, Path)
+        else input_file_path
+    )
     file_extension = input_file_path.suffix
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
@@ -239,13 +329,12 @@ def extract_audio_segment(input_file_path, start_time_ms, duration_ms):
 
         try:
             (
-                ffmpeg
-                .input(input_file_path, ss=start_time_ms/1000)
-                .output(temp_file.name, t=duration_ms/1000)
+                ffmpeg.input(input_file_path, ss=start_time_ms / 1000)
+                .output(temp_file.name, t=duration_ms / 1000)
                 .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
             )
         except ffmpeg.Error as e:
-            print("ffmpeg error occurred: ", e.stderr.decode('utf-8'))
+            print("ffmpeg error occurred: ", e.stderr.decode("utf-8"))
             raise e
 
     return temp_file_path
@@ -268,15 +357,23 @@ def distribute_segments_equally(total_duration, segments_duration, iterations):
 
 
 def align(audio, result, debug):
-    start_time = time.time_ns() / 1e6
+    start_time = time.time_ns() / 1e9
 
-    model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
-    result = whisperx.align(result["segments"], model_a, metadata, audio, device,
-                            return_char_alignments=False)
+    model_a, metadata = whisperx.load_align_model(
+        language_code=result["language"], device=device
+    )
+    result = whisperx.align(
+        result["segments"],
+        model_a,
+        metadata,
+        audio,
+        device,
+        return_char_alignments=False,
+    )
 
     if debug:
-        elapsed_time = time.time_ns() / 1e6 - start_time
-        print(f"Duration to align output: {elapsed_time:.2f} ms")
+        elapsed_time = time.time_ns() / 1e9 - start_time
+        print(f"Duration to align output: {elapsed_time:.2f} s")
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -286,16 +383,24 @@ def align(audio, result, debug):
 
 
 def diarize(audio, result, debug, huggingface_access_token, min_speakers, max_speakers):
-    start_time = time.time_ns() / 1e6
+    start_time = time.time_ns() / 1e9
 
-    diarize_model = whisperx.DiarizationPipeline(use_auth_token=huggingface_access_token, device=device)
-    diarize_segments = diarize_model(audio, min_speakers=min_speakers, max_speakers=max_speakers)
+    diarize_model = whisperx.DiarizationPipeline(
+        use_auth_token=huggingface_access_token, device=device
+    )
+    diarize_result = diarize_model(
+        audio,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+        return_embeddings=True,
+    )
+    diarize_segments, speaker_embeddings = diarize_result
 
-    result = whisperx.assign_word_speakers(diarize_segments, result)
+    result = whisperx.assign_word_speakers(diarize_segments, result, speaker_embeddings)
 
     if debug:
-        elapsed_time = time.time_ns() / 1e6 - start_time
-        print(f"Duration to diarize segments: {elapsed_time:.2f} ms")
+        elapsed_time = time.time_ns() / 1e9 - start_time
+        print(f"Duration to diarize segments: {elapsed_time:.2f} s")
 
     gc.collect()
     torch.cuda.empty_cache()

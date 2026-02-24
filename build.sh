@@ -13,16 +13,25 @@ download() {
   fi
 }
 
-faster_whisper_model_dir=models/faster-whisper-large-v3
-mkdir -p $faster_whisper_model_dir
+# faster-whisper-large-v3 (Systran/faster-whisper-large-v3)
+faster_whisper_large_v3_dir=models/faster-whisper-large-v3
+mkdir -p $faster_whisper_large_v3_dir
+download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/config.json" "$faster_whisper_large_v3_dir/config.json"
+download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/model.bin" "$faster_whisper_large_v3_dir/model.bin"
+download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/preprocessor_config.json" "$faster_whisper_large_v3_dir/preprocessor_config.json"
+download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/tokenizer.json" "$faster_whisper_large_v3_dir/tokenizer.json"
+download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/vocabulary.json" "$faster_whisper_large_v3_dir/vocabulary.json"
 
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/config.json" "$faster_whisper_model_dir/config.json"
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/model.bin" "$faster_whisper_model_dir/model.bin"
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/preprocessor_config.json" "$faster_whisper_model_dir/preprocessor_config.json"
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/tokenizer.json" "$faster_whisper_model_dir/tokenizer.json"
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/vocabulary.json" "$faster_whisper_model_dir/vocabulary.json"
+# large-v3-turbo (mobiuslabsgmbh/faster-whisper-large-v3-turbo) — faster, less VRAM
+faster_whisper_turbo_dir=models/faster-whisper-large-v3-turbo
+mkdir -p $faster_whisper_turbo_dir
+download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/config.json" "$faster_whisper_turbo_dir/config.json"
+download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/model.bin" "$faster_whisper_turbo_dir/model.bin"
+download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/preprocessor_config.json" "$faster_whisper_turbo_dir/preprocessor_config.json"
+download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/tokenizer.json" "$faster_whisper_turbo_dir/tokenizer.json"
+download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/vocabulary.json" "$faster_whisper_turbo_dir/vocabulary.json"
 
-pip install -U git+https://github.com/m-bain/whisperx.git
+pip install -U whisperx
 
 vad_model_dir=models/vad
 mkdir -p $vad_model_dir
