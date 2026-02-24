@@ -1,12 +1,22 @@
 from cog import BasePredictor, Input, Path, BaseModel
 from typing import Any, Optional
-from whisperx.audio import N_SAMPLES, log_mel_spectrogram
 
 import gc
 import importlib
 import math
 import os
 import shutil
+import warnings
+
+# Suppress torchcodec warning from pyannote: we load audio with whisperx.load_audio
+# and pass waveform to diarization; torchcodec's FFmpeg decoding is never used.
+warnings.filterwarnings(
+    "ignore",
+    message=r"\s*torchcodec is not installed correctly",
+    module="pyannote.audio.core.io",
+)
+
+from whisperx.audio import N_SAMPLES, log_mel_spectrogram
 import whisperx
 from whisperx.diarize import DiarizationPipeline
 import tempfile
@@ -186,7 +196,8 @@ class Predictor(BasePredictor):
 
                 print(
                     "Detecting languages on segments starting at "
-                    + ", ".join(map(str, segments_starts))
+                    + ", ".join(map(str, segments_starts)),
+                    flush=True,
                 )
 
                 detected_language_details = detect_language(
@@ -205,7 +216,8 @@ class Predictor(BasePredictor):
 
                 print(
                     f"Detected language {detected_language_code} ({detected_language_prob:.2f}) after "
-                    f"{detected_language_iterations} iterations."
+                    f"{detected_language_iterations} iterations.",
+                    flush=True,
                 )
 
                 language = detected_language_details["language"]
@@ -223,7 +235,7 @@ class Predictor(BasePredictor):
 
             if debug:
                 elapsed_time = time.time_ns() / 1e9 - start_time
-                print(f"Duration to load model: {elapsed_time:.2f} s")
+                print(f"Duration to load model: {elapsed_time:.2f} s", flush=True)
 
             start_time = time.time_ns() / 1e9
 
@@ -231,7 +243,7 @@ class Predictor(BasePredictor):
 
             if debug:
                 elapsed_time = time.time_ns() / 1e9 - start_time
-                print(f"Duration to load audio: {elapsed_time:.2f} s")
+                print(f"Duration to load audio: {elapsed_time:.2f} s", flush=True)
 
             start_time = time.time_ns() / 1e9
 
@@ -240,7 +252,7 @@ class Predictor(BasePredictor):
 
             if debug:
                 elapsed_time = time.time_ns() / 1e9 - start_time
-                print(f"Duration to transcribe: {elapsed_time:.2f} s")
+                print(f"Duration to transcribe: {elapsed_time:.2f} s", flush=True)
 
             gc.collect()
             torch.cuda.empty_cache()
@@ -255,7 +267,8 @@ class Predictor(BasePredictor):
                     result = align(audio, result, debug)
                 else:
                     print(
-                        f"Cannot align output as language {detected_language} is not supported for alignment"
+                        f"Cannot align output as language {detected_language} is not supported for alignment",
+                        flush=True,
                     )
 
             if diarization:
@@ -270,7 +283,8 @@ class Predictor(BasePredictor):
 
             if debug:
                 print(
-                    f"max gpu memory allocated over runtime: {torch.cuda.max_memory_reserved() / (1024 ** 3):.2f} GB"
+                    f"max gpu memory allocated over runtime: {torch.cuda.max_memory_reserved() / (1024 ** 3):.2f} GB",
+                    flush=True,
                 )
 
         return Output(
@@ -283,9 +297,20 @@ class Predictor(BasePredictor):
 def get_audio_duration(file_path):
     probe = ffmpeg.probe(file_path)
     stream = next(
-        (stream for stream in probe["streams"] if stream["codec_type"] == "audio"), None
+        (s for s in probe["streams"] if s["codec_type"] == "audio"), None
     )
-    return float(stream["duration"]) * 1000
+    if stream is None:
+        raise ValueError(f"No audio stream found in {file_path}")
+    # Duration can be in the stream or in the format (e.g. some MP3s lack stream duration)
+    duration_s = stream.get("duration")
+    if duration_s is None and "format" in probe:
+        duration_s = probe["format"].get("duration")
+    if duration_s is None:
+        raise ValueError(
+            f"Cannot get duration for {file_path}: no 'duration' in stream or format. "
+            "Try re-encoding the file (e.g. with ffmpeg -i in.mp3 -acodec copy out.mp3)."
+        )
+    return float(duration_s) * 1000
 
 
 def detect_language(
@@ -326,7 +351,8 @@ def detect_language(
     language = language_token[2:-2]
 
     print(
-        f"Iteration {iteration} - Detected language: {language} ({language_probability:.2f})"
+        f"Iteration {iteration} - Detected language: {language} ({language_probability:.2f})",
+        flush=True,
     )
 
     audio_segment_file_path.unlink()
@@ -378,7 +404,7 @@ def extract_audio_segment(input_file_path, start_time_ms, duration_ms):
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
         temp_file_path = Path(temp_file.name)
 
-        print(f"Extracting from {input_file_path.name} to {temp_file.name}")
+        print(f"Extracting from {input_file_path.name} to {temp_file.name}", flush=True)
 
         try:
             (
@@ -387,7 +413,7 @@ def extract_audio_segment(input_file_path, start_time_ms, duration_ms):
                 .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
             )
         except ffmpeg.Error as e:
-            print("ffmpeg error occurred: ", e.stderr.decode("utf-8"))
+            print("ffmpeg error occurred: ", e.stderr.decode("utf-8"), flush=True)
             raise e
 
     return temp_file_path
@@ -426,7 +452,7 @@ def align(audio, result, debug):
 
     if debug:
         elapsed_time = time.time_ns() / 1e9 - start_time
-        print(f"Duration to align output: {elapsed_time:.2f} s")
+        print(f"Duration to align output: {elapsed_time:.2f} s", flush=True)
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -453,7 +479,7 @@ def diarize(audio, result, debug, huggingface_access_token, min_speakers, max_sp
 
     if debug:
         elapsed_time = time.time_ns() / 1e9 - start_time
-        print(f"Duration to diarize segments: {elapsed_time:.2f} s")
+        print(f"Duration to diarize segments: {elapsed_time:.2f} s", flush=True)
 
     gc.collect()
     torch.cuda.empty_cache()
