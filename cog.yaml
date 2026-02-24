@@ -1,8 +1,12 @@
 build:
-  cuda: "12.1"
+  cuda: "12.5"
   gpu: true
   system_packages:
     - "ffmpeg"
+    - "software-properties-common"
   python_version: "3.11"
   python_requirements: requirements.txt
+  run:
+    # Pre-download Whisper + VAD models (same as build.sh, without final "cog run python")
+    - head -n -1 build.sh | bash
 predict: "predict.py:Predictor"

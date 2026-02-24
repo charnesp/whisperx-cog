@@ -13,6 +13,15 @@ download() {
   fi
 }
 
+# faster-whisper-tiny (Systran/faster-whisper-tiny)
+faster_whisper_tiny_dir=models/faster-whisper-tiny
+mkdir -p $faster_whisper_tiny_dir
+download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/config.json" "$faster_whisper_tiny_dir/config.json"
+download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/model.bin" "$faster_whisper_tiny_dir/model.bin"
+download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/preprocessor_config.json" "$faster_whisper_tiny_dir/preprocessor_config.json"
+download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/tokenizer.json" "$faster_whisper_tiny_dir/tokenizer.json"
+download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/vocabulary.json" "$faster_whisper_tiny_dir/vocabulary.json"
+
 # faster-whisper-large-v3 (Systran/faster-whisper-large-v3)
 faster_whisper_large_v3_dir=models/faster-whisper-large-v3
 mkdir -p $faster_whisper_large_v3_dir

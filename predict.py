@@ -3,10 +3,12 @@ from typing import Any, Optional
 from whisperx.audio import N_SAMPLES, log_mel_spectrogram
 
 import gc
+import importlib
 import math
 import os
 import shutil
 import whisperx
+from whisperx.diarize import DiarizationPipeline
 import tempfile
 import time
 import torch
@@ -15,10 +17,39 @@ import ffmpeg
 compute_type = "float16"  # change to "int8" if low on GPU mem (may reduce accuracy)
 device = "cuda"
 
-WHISPER_MODEL_PATHS = {
+# Local paths used when models are pre-downloaded (e.g. in Docker build)
+WHISPER_MODEL_LOCAL_PATHS = {
+    "tiny": "./models/faster-whisper-tiny",
     "large-v3": "./models/faster-whisper-large-v3",
     "large-v3-turbo": "./models/faster-whisper-large-v3-turbo",
 }
+# HuggingFace repo IDs for download when local path does not exist (e.g. local dev)
+WHISPER_MODEL_HF_IDS = {
+    "tiny": "Systran/faster-whisper-tiny",
+    "large-v3": "Systran/faster-whisper-large-v3",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+}
+
+
+def _resolve_input_default(val: Any) -> Any:
+    """When predict() is called from Python (not via Cog API), omitted args get the Input()
+    object (Pydantic FieldInfo) as value. Return the actual default in that case."""
+    if type(val).__name__ == "FieldInfo":
+        default = getattr(val, "default", val)
+        if type(default).__name__ == "PydanticUndefined":
+            return None
+        return default
+    return val
+
+
+def _resolve_whisper_model_path(whisper_model: str) -> str:
+    """Use local path if it exists, otherwise HuggingFace repo ID for download."""
+    local_path = WHISPER_MODEL_LOCAL_PATHS[whisper_model]
+    if os.path.isdir(local_path) and os.path.isfile(
+        os.path.join(local_path, "model.bin")
+    ):
+        return local_path
+    return WHISPER_MODEL_HF_IDS[whisper_model]
 
 
 class Output(BaseModel):
@@ -46,9 +77,9 @@ class Predictor(BasePredictor):
         self,
         audio_file: Path = Input(description="Audio file"),
         whisper_model: str = Input(
-            description="Whisper ASR model: large-v3 (higher accuracy) or large-v3-turbo (faster, less VRAM)",
+            description="Whisper ASR model: tiny (smallest), large-v3 (higher accuracy), or large-v3-turbo (faster, less VRAM)",
             default="large-v3-turbo",
-            choices=["large-v3", "large-v3-turbo"],
+            choices=["tiny", "large-v3", "large-v3-turbo"],
         ),
         language: str = Input(
             description="ISO code of the language spoken in the audio, specify None to perform language detection",
@@ -105,12 +136,33 @@ class Predictor(BasePredictor):
         ),
     ) -> Output:
         with torch.inference_mode():
-            whisper_arch = WHISPER_MODEL_PATHS[whisper_model]
+            # Resolve Pydantic FieldInfo → real default when predict() is called from Python
+            # (e.g. run_local.py) without passing optional args
+            audio_file = _resolve_input_default(audio_file)
+            whisper_model = _resolve_input_default(whisper_model)
+            language = _resolve_input_default(language)
+            language_detection_min_prob = _resolve_input_default(language_detection_min_prob)
+            language_detection_max_tries = _resolve_input_default(language_detection_max_tries)
+            initial_prompt = _resolve_input_default(initial_prompt)
+            hotwords = _resolve_input_default(hotwords)
+            batch_size = _resolve_input_default(batch_size)
+            temperature = _resolve_input_default(temperature)
+            vad_onset = _resolve_input_default(vad_onset)
+            vad_offset = _resolve_input_default(vad_offset)
+            align_output = _resolve_input_default(align_output)
+            diarization = _resolve_input_default(diarization)
+            huggingface_access_token = _resolve_input_default(huggingface_access_token)
+            min_speakers = _resolve_input_default(min_speakers)
+            max_speakers = _resolve_input_default(max_speakers)
+            debug = _resolve_input_default(debug)
+
+            whisper_arch = _resolve_whisper_model_path(whisper_model)
             asr_options = {
                 "temperatures": [temperature],
                 "initial_prompt": initial_prompt,
                 "hotwords": hotwords if hotwords and hotwords.strip() else None,
             }
+
 
             vad_options = {"vad_onset": vad_onset, "vad_offset": vad_offset}
 
@@ -195,9 +247,10 @@ class Predictor(BasePredictor):
             del model
 
             if align_output:
+                alignment_module = importlib.import_module("whisperx.alignment")
                 if (
-                    detected_language in whisperx.alignment.DEFAULT_ALIGN_MODELS_TORCH
-                    or detected_language in whisperx.alignment.DEFAULT_ALIGN_MODELS_HF
+                    detected_language in alignment_module.DEFAULT_ALIGN_MODELS_TORCH
+                    or detected_language in alignment_module.DEFAULT_ALIGN_MODELS_HF
                 ):
                     result = align(audio, result, debug)
                 else:
@@ -385,8 +438,8 @@ def align(audio, result, debug):
 def diarize(audio, result, debug, huggingface_access_token, min_speakers, max_speakers):
     start_time = time.time_ns() / 1e9
 
-    diarize_model = whisperx.DiarizationPipeline(
-        use_auth_token=huggingface_access_token, device=device
+    diarize_model = DiarizationPipeline(
+        token=huggingface_access_token, device=device
     )
     diarize_result = diarize_model(
         audio,
