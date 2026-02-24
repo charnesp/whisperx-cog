@@ -9,10 +9,9 @@ build:
   python_requirements: requirements.txt
   run:
     # FFmpeg 6 (libavutil58) for torchcodec/pyannote — add PPA manually (add-apt-repository needs apt_pkg for system Python)
-    - |
-      curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF4E48910A020E77056748B745738AE8480447DDF" | gpg --dearmor -o /usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg
-      echo "deb [signed-by=/usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg] http://ppa.launchpad.net/ubuntuhandbook1/ffmpeg6/ubuntu jammy main" > /etc/apt/sources.list.d/ubuntuhandbook1-ffmpeg6.list
-      apt-get update -qq && apt-get install -qqy --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+    - curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF4E48910A020E77056748B745738AE8480447DDF" | gpg --dearmor -o /usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg
+    - echo "deb [signed-by=/usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg] http://ppa.launchpad.net/ubuntuhandbook1/ffmpeg6/ubuntu jammy main" > /etc/apt/sources.list.d/ubuntuhandbook1-ffmpeg6.list
+    - apt-get update -qq && apt-get install -qqy --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
     # Pre-download Whisper + VAD models (same as build.sh, without final "cog run python")
     - head -n -1 build.sh | bash
 environment:
