@@ -1,0 +1,36 @@
+# Manual deployment to Replicate
+# Trigger from Actions tab → "Deploy to Replicate" → Run workflow
+# Requires secret REPLICATE_CLI_AUTH_TOKEN (get it at replicate.com/auth/token)
+# https://github.com/marketplace/actions/setup-cog
+
+name: Deploy to Replicate
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        required: true
+        description: "Replicate model to publish (e.g. charnesp/whisperx-cog). The model must already exist on Replicate."
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Cog
+        uses: replicate/setup-cog@v2
+        with:
+          token: ${{ secrets.REPLICATE_CLI_AUTH_TOKEN }}
+          cog-version: "v0.16.12"
+
+      - name: Use default Docker builder
+        run: docker buildx use default
+
+      - name: Push to Replicate
+        run: cog push r8.im/${{ inputs.model_name }}
