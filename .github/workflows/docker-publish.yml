@@ -45,7 +45,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build image with Cog
-        run: cog build --progress=plain -t ${{ env.IMAGE_NAME }}:latest -t ${{ env.IMAGE_NAME }}:${{ github.sha }}
+        run: cog build --progress=plain -t ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Tag image as latest
+        run: docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:latest
 
       - name: Push image to GHCR
         run: |
