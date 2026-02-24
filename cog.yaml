@@ -4,7 +4,7 @@ build:
   system_packages:
     - "ffmpeg"
     - "software-properties-common"
-  python_version: "3.15"
+  python_version: "3.13"
   python_requirements: requirements.txt
   run:
     # Pre-download Whisper + VAD models (same as build.sh, without final "cog run python")
