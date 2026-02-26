@@ -109,7 +109,7 @@ def _sanitize_for_json(obj: Any) -> Any:
 
 
 class Output(BaseModel):
-    segments: Any
+    segments: list  # list of segment dicts (start, end, text, words?, speaker?)
     detected_language: str
     speaker_embeddings: Optional[dict] = None
 
@@ -384,10 +384,27 @@ class Predictor(BasePredictor):
                     flush=True,
                 )
 
+        # Normalize to Output types (list, str, Optional[dict]) so schema/validation never fails
+        raw_segments = result.get("segments")
+        segments = _sanitize_for_json(raw_segments) if raw_segments is not None else []
+        if not isinstance(segments, list):
+            segments = []
+
+        raw_lang = detected_language
+        if isinstance(raw_lang, dict):
+            detected_language_str = str(raw_lang.get("language", ""))
+        else:
+            detected_language_str = str(raw_lang) if raw_lang is not None else ""
+
+        raw_embeddings = result.get("speaker_embeddings")
+        embeddings = _sanitize_for_json(raw_embeddings) if raw_embeddings is not None else None
+        if embeddings is not None and not isinstance(embeddings, dict):
+            embeddings = None
+
         return Output(
-            segments=_sanitize_for_json(result["segments"]),
-            detected_language=_sanitize_for_json(detected_language),
-            speaker_embeddings=_sanitize_for_json(result.get("speaker_embeddings")),
+            segments=segments,
+            detected_language=detected_language_str,
+            speaker_embeddings=embeddings,
         )
 
 
