@@ -109,9 +109,9 @@ def _sanitize_for_json(obj: Any) -> Any:
 
 
 class Output(BaseModel):
-    segments: list  # list of segment dicts (start, end, text, words?, speaker?)
+    segments: list[dict]  # list of segment dicts (start, end, text, words?, speaker?)
     detected_language: str
-    speaker_embeddings: Optional[dict] = None
+    speaker_embeddings: Optional[dict[str, list[float]]] = None
 
 
 class Predictor(BasePredictor):
