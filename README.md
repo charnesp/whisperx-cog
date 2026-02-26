@@ -60,7 +60,17 @@ The **webhook and `WEBHOOK_SECRET` are only for internal communication** (Cog �
 - **Replicate-compatible endpoint:** `http://<host>:8080`
 - **Create a prediction:** `POST /predictions` with a JSON body (e.g. `input` with `audio` URL and options). Use header `Authorization: Bearer <BRIDGE_TOKEN>`.
 - **Get result:** `GET /predictions/<id>` with the same Bearer token. Returns the stored prediction payload (e.g. status and output once the webhook has fired).
-- **Health check:** `GET /health` (no auth).
+- **Health check:** `GET /health` (no auth). Lightweight liveness only (bridge is up). For readiness of the model, use Cog’s `GET /health-check` (see below).
+
+### Health checks
+
+- **Bridge — liveness:** `GET /health` on port 8080 (no auth). Returns 200 if the bridge is up. Used by Kubernetes `livenessProbe` in this stack.
+- **Cog — readiness:** The Cog server (port 5000) exposes **`GET /health-check`**. It always returns HTTP 200; check the JSON body:
+  - **`status`**: `READY` (accepting predictions), `STARTING` (setup running), `BUSY`, `SETUP_FAILED`, `DEFUNCT`, or `UNHEALTHY`.
+  - **`user_healthcheck_error`**: Set when the predictor’s `healthcheck()` returns `False` (optional method).
+- **Predictor:** This model implements **`healthcheck()`** and returns `True` only if CUDA is available, so Cog reports `UNHEALTHY` when the GPU is missing or broken.
+
+The bridge proxies **`GET /health-check`** to Cog (no auth). The Kubernetes deployment uses it as **readinessProbe**, so the pod is marked ready only when Cog responds successfully.
 
 ### Prediction response format (Cog / Replicate API)
 

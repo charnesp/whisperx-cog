@@ -112,9 +112,15 @@ The Cog server sends the prediction result as JSON (e.g. to the webhook). Python
 - With `Prefer: respond-async`, the server returns `202 Accepted` and processes in the background. Updates are delivered **only via webhooks**; polling for status is not supported by Cog.
 - The bridge in `k8s/whisperx-stack.yaml` can inject an internal webhook and store the final prediction in Redis for `GET /predictions/<id>`. If the client provides its own webhook, the bridge does not store the result.
 
+### Health checks
+
+- **Cog** exposes **GET /health-check** (always 200; check JSON `status`: READY, STARTING, BUSY, SETUP_FAILED, DEFUNCT, UNHEALTHY). Optional **`healthcheck()`** on the Predictor: return `False` to set status UNHEALTHY.
+- This predictor implements **`healthcheck()`** and returns `torch.cuda.is_available()` so the container is UNHEALTHY if the GPU is missing or broken.
+- In k8s, the bridge proxies **GET /health-check** to Cog (no auth) and the Deployment uses **readinessProbe** on it; **livenessProbe** uses **GET /health** (bridge only).
+
 ## Code layout
 
-- **`predict.py`** — Cog `Predictor`, `Output` model, transcribe/align/diarize pipeline. Entrypoint for predictions.
+- **`predict.py`** — Cog `Predictor`, `Output` model, `healthcheck()`, transcribe/align/diarize pipeline. Entrypoint for predictions.
 - **`k8s/whisperx-stack.yaml`** — Kubernetes deployment (Cog + Redis + bridge) for a Replicate-compatible API with webhooks.
 
 ## References

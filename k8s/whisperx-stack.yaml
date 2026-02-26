@@ -69,9 +69,9 @@ data:
         def log_message(self, format, *args): return
 
         def is_authorized(self):
-            if self.path == "/health":
+            if self.path in ("/health", "/health-check"):
                 return True
-            
+
             if f"/{WEBHOOK_SECRET}/webhook" in self.path:
                 return True
 
@@ -85,7 +85,10 @@ data:
                 self.send_error(401, "Unauthorized"); return
             if self.path == "/health":
                 self.send_response(200); self.end_headers(); return
-            
+
+            if self.path == "/health-check":
+                self.proxy_request("GET"); return
+
             pred_id = self.path.strip('/').split('/')[-1]
             raw_data = redis_cmd(["GET", pred_id])
             if raw_data and "\r\n" in raw_data:
@@ -211,6 +214,10 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
+            port: 8080
+        readinessProbe:
+          httpGet:
+            path: /health-check
             port: 8080
         volumeMounts:
         - name: script-vol
