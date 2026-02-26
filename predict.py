@@ -96,7 +96,7 @@ def _sanitize_for_json(obj: Any) -> Any:
     if hasattr(obj, "item"):
         try:
             x = obj.item()
-            return _sanitize_for_json(x)
+            return _sanitize_for_json(x)po
         except (ValueError, RuntimeError):
             return None
     # numpy array or torch tensor
@@ -109,9 +109,9 @@ def _sanitize_for_json(obj: Any) -> Any:
 
 
 class Output(BaseModel):
-    segments: list[dict]  # list of segment dicts (start, end, text, words?, speaker?)
+    segments: Any  # list of segment dicts (start, end, text, words?, speaker?)
     detected_language: str
-    speaker_embeddings: Optional[dict[str, list[float]]] = None
+    speaker_embeddings: Optional[dict] = None
 
 
 class Predictor(BasePredictor):

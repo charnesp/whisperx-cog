@@ -1,5 +1,5 @@
 build:
-  cog_runtime: true
+  # cog_runtime: true  # disabled: new runtime (coglet) only allows str/int/float/bool/Path/List in Output, not dict/list[dict]
   cuda: "12.5"
   gpu: true
   system_packages:
