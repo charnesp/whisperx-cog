@@ -1,0 +1,238 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bridge-auth-secret
+type: Opaque
+stringData:
+  BRIDGE_TOKEN: "TOKEN"
+  WEBHOOK_SECRET: "SECRET"
+
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hf-secret
+type: Opaque
+stringData:
+  HUGGINGFACE_TOKEN: "TOKEN"
+
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cog-bridge-script
+data:
+  bridge.py: |
+    import json
+    import socket
+    import urllib.request
+    import urllib.error
+    import uuid
+    import os
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from socketserver import ThreadingMixIn
+    from urllib.parse import urlparse, parse_qs
+
+    REDIS_HOST, REDIS_PORT = '127.0.0.1', 6379
+    COG_URL = "http://127.0.0.1:5000"
+    REDIS_MESSAGE_TTL=86400 # 24h
+    
+    AUTH_TOKEN = os.environ.get("BRIDGE_AUTH_TOKEN", "")
+    WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "default_secret")
+
+    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
+    def redis_cmd(cmd_list):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2); s.connect((REDIS_HOST, REDIS_PORT))
+                request = f"*{len(cmd_list)}\r\n"
+                for arg in cmd_list:
+                    arg_s = str(arg); request += f"${len(arg_s.encode('utf-8'))}\r\n{arg_s}\r\n"
+                s.sendall(request.encode('utf-8'))
+                
+                response = b""
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk: break
+                    response += chunk
+                    if len(chunk) < 4096: break
+                return response.decode('utf-8', errors='ignore')
+        except Exception as e:
+            print(f"[REDIS ERROR]: {e}")
+            return None
+
+    class ReplicateCompatibleBridge(BaseHTTPRequestHandler):
+        def log_message(self, format, *args): return
+
+        def is_authorized(self):
+            if self.path == "/health":
+                return True
+            
+            if f"/{WEBHOOK_SECRET}/webhook" in self.path:
+                return True
+
+            auth_header = self.headers.get('Authorization')
+            if auth_header == f"Bearer {AUTH_TOKEN}":
+                return True
+            return False
+
+        def do_GET(self):
+            if not self.is_authorized():
+                self.send_error(401, "Unauthorized"); return
+            if self.path == "/health":
+                self.send_response(200); self.end_headers(); return
+            
+            pred_id = self.path.strip('/').split('/')[-1]
+            raw_data = redis_cmd(["GET", pred_id])
+            if raw_data and "\r\n" in raw_data:
+                parts = raw_data.split("\r\n")
+                actual_json = parts[1] if len(parts) > 1 and parts[0] != "$-1" else None
+                if actual_json:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(actual_json.encode('utf-8'))
+                    return
+            self.proxy_request("GET")
+
+        def do_POST(self):
+            if not self.is_authorized():
+                self.send_error(401, "Unauthorized"); return
+            if f"/{WEBHOOK_SECRET}/webhook" in self.path:
+                self.handle_webhook()
+            else:
+                self.proxy_request("POST")
+
+        def handle_webhook(self):
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            pred_id = parse_qs(urlparse(self.path).query).get('id', ['last'])[0]
+            redis_cmd(["SET", pred_id, body, "EX", f"{REDIS_MESSAGE_TTL}"])
+            self.send_response(200); self.end_headers()
+
+        def proxy_request(self, method):
+            content_length = int(self.headers.get('Content-Length', 0))
+            req_body = self.rfile.read(content_length)
+            
+            target_path = self.path
+            target_method = method
+
+            if method == "POST" and self.path.strip('/') == "predictions":
+                try:
+                    data = json.loads(req_body)
+                    generated_id = data.get("id") or str(uuid.uuid4().hex)[:24]
+                    data["id"] = generated_id
+                    if "webhook" not in data :
+                        data["webhook"] = f"http://localhost:8080/{WEBHOOK_SECRET}/webhook?id={generated_id}"
+                        data["webhook_events_filter"] = ["start", "completed"]
+                    req_body = json.dumps(data).encode('utf-8')
+                except: pass
+
+            url = f"{COG_URL}{target_path}"
+            req = urllib.request.Request(url, data=req_body if target_method != "GET" else None, method=target_method)
+            for k, v in self.headers.items():
+                if k.lower() not in ['host', 'content-length', 'authorization']:
+                    req.add_header(k, v)
+
+            try:
+                with urllib.request.urlopen(req, timeout=30) as res:
+                    resp_data = res.read()
+                    self.send_response(res.status)
+                    for k, v in res.getheaders():
+                        if k.lower() != 'content-length': self.send_header(k, v)
+                    self.send_header('Content-Length', str(len(resp_data)))
+                    self.end_headers()
+                    self.wfile.write(resp_data)
+            except Exception as e:
+                self.send_response(502); self.end_headers()
+
+    if __name__ == '__main__':
+        print("Bridge started...")
+        ThreadedHTTPServer(('0.0.0.0', 8080), ReplicateCompatibleBridge).serve_forever()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whisperx-stack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: whisperx
+  template:
+    metadata:
+      labels:
+        app: whisperx
+    spec:
+      containers:
+      # 1. WHISPERX (COG)
+      - name: whisperx
+        image: ghcr.io/charnesp/whisperx-cog:latest
+        ports:
+        - containerPort: 5000
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: "12Gi"
+            cpu: "4"
+        env:
+          - name: HUGGINGFACE_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-secret
+                key: HUGGINGFACE_TOKEN
+
+      # 2. REDIS
+      - name: redis
+        image: redis:alpine
+
+      # 3. BRIDGE
+      - name: bridge
+        image: python:3.9-slim
+        command: ["python", "-u", "/scripts/bridge.py"]
+        env:
+          - name: BRIDGE_AUTH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: bridge-auth-secret
+                key: BRIDGE_TOKEN
+          - name: WEBHOOK_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: bridge-auth-secret
+                key: WEBHOOK_SECRET
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+        volumeMounts:
+        - name: script-vol
+          mountPath: /scripts
+
+      volumes:
+      - name: script-vol
+        configMap:
+          name: cog-bridge-script
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whisperx-service
+spec:
+  selector:
+    app: whisperx
+  ports:
+    - name: api
+      port: 5000
+      targetPort: 5000
+    - name: bridge
+      port: 8080
+      targetPort: 8080
