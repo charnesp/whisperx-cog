@@ -62,6 +62,77 @@ The **webhook and `WEBHOOK_SECRET` are only for internal communication** (Cog �
 - **Get result:** `GET /predictions/<id>` with the same Bearer token. Returns the stored prediction payload (e.g. status and output once the webhook has fired).
 - **Health check:** `GET /health` (no auth).
 
+### Prediction response format (Cog / Replicate API)
+
+The prediction object in the response (or sent to the webhook on `completed`) has this shape:
+
+- **`status`**: `"succeeded"`, `"failed"`, or `"canceled"` (and `"starting"` / `"processing"` while running).
+- **`output`**: The return value of `predict()` when `status` is `"succeeded"`. Omitted or `null` when the prediction failed or was canceled.
+- **`error`**: Present when `status` is `"failed"`. Contains the error message (string) describing why the prediction failed.
+- **`metrics`**: Optional object (e.g. `predict_time` in seconds). May be present even when the prediction failed.
+
+**Example — failed prediction:**
+
+```json
+{
+  "status": "failed",
+  "error": "Out of range float values are not JSON compliant: nan",
+  "output": null,
+  "metrics": { "predict_time": 12.34 }
+}
+```
+
+**Example — succeeded prediction:**
+
+```json
+{
+  "status": "succeeded",
+  "output": {
+    "segments": [
+      {
+        "start": 0.52,
+        "end": 3.544,
+        "text": " The glow deepened in the eyes of the sweet girl.",
+        "words": [
+          {
+            "word": "The",
+            "start": 0.52,
+            "end": 0.642,
+            "score": 0.796,
+            "speaker": "SPEAKER_00"
+          },
+          { "word": "glow", "start": 0.682, "end": 0.987, "score": 0.85, "speaker": "SPEAKER_00" }
+        ],
+        "speaker": "SPEAKER_00"
+      }
+    ],
+    "detected_language": "en",
+    "speaker_embeddings": {
+      "SPEAKER_00": [-0.09, 0.04, -0.08, ...]
+    }
+  },
+  "metrics": { "predict_time": 5.2 }
+}
+```
+
+**Output schema (when `status` is `succeeded`):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `segments` | array | List of segments (utterances). |
+| `segments[].start` / `end` | number | Segment timestamps in seconds. |
+| `segments[].text` | string | Transcribed text for the segment. |
+| `segments[].words` | array | Word-level timing (present if alignment was run). |
+| `segments[].words[].word` | string | Token text. |
+| `segments[].words[].start` / `end` | number | Word timestamps in seconds. |
+| `segments[].words[].score` | number | Alignment confidence (0–1). |
+| `segments[].words[].speaker` | string | Speaker id (e.g. `SPEAKER_00`) if diarization was run. |
+| `segments[].speaker` | string | Speaker id for the whole segment (if diarization was run). |
+| `detected_language` | string | ISO language code (e.g. `"en"`). |
+| `speaker_embeddings` | object \| null | Map `speaker_id` → vector of floats (embedding). `null` if diarization was not run. |
+
+References: [Cog HTTP API](https://cog.run/http/) (POST /predictions response), [Replicate HTTP API](https://replicate.com/docs/reference/http) (Get a prediction).
+
 The bridge only injects `webhook` and `webhook_events_filter: ["start", "completed"]` when the client does not send them; if the client already provides both, the request is forwarded unchanged. When the internal webhook is used, results are stored in Redis and available via `GET /predictions/<id>`. **If you provide your own webhook**, the bridge does not store the prediction in Redis, so **`GET /predictions/<id>` will not return the prediction status or output** — use your webhook URL to receive updates instead.
 
 # Citation

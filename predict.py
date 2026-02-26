@@ -76,6 +76,38 @@ def _resolve_whisper_model_path(whisper_model: str) -> str:
     return WHISPER_MODEL_HF_IDS[whisper_model]
 
 
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively replace NaN/inf and convert numpy/torch types so the result is JSON-serializable.
+    Prevents 'Out of range float values are not JSON compliant' when Cog sends the webhook.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, (bool, int, str)):
+        return obj
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    # numpy/torch scalar
+    if hasattr(obj, "item"):
+        try:
+            x = obj.item()
+            return _sanitize_for_json(x)
+        except (ValueError, RuntimeError):
+            return None
+    # numpy array or torch tensor
+    if hasattr(obj, "tolist"):
+        try:
+            return _sanitize_for_json(obj.tolist())
+        except (ValueError, RuntimeError):
+            return None
+    return obj
+
+
 class Output(BaseModel):
     segments: Any
     detected_language: str
@@ -353,9 +385,9 @@ class Predictor(BasePredictor):
                 )
 
         return Output(
-            segments=result["segments"],
-            detected_language=detected_language,
-            speaker_embeddings=result.get("speaker_embeddings"),
+            segments=_sanitize_for_json(result["segments"]),
+            detected_language=_sanitize_for_json(detected_language),
+            speaker_embeddings=_sanitize_for_json(result.get("speaker_embeddings")),
         )
 
 

@@ -1,4 +1,5 @@
 build:
+  cog_runtime: true
   cuda: "12.5"
   gpu: true
   system_packages:
