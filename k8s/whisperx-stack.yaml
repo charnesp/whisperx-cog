@@ -176,6 +176,7 @@ spec:
       # 1. WHISPERX (COG)
       - name: whisperx
         image: ghcr.io/charnesp/whisperx-cog:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 5000
         resources:
