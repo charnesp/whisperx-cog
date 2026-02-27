@@ -96,7 +96,7 @@ def _sanitize_for_json(obj: Any) -> Any:
     if hasattr(obj, "item"):
         try:
             x = obj.item()
-            return _sanitize_for_json(x)po
+            return _sanitize_for_json(x)
         except (ValueError, RuntimeError):
             return None
     # numpy array or torch tensor
