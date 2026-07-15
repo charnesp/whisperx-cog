@@ -41,6 +41,7 @@ For implementation details, see the [WhisperX GitHub repo](https://github.com/m-
 | `cog.yaml` | Cog build and runtime configuration |
 | `bridge/bridge.py` | **Source of truth** for the Replicate-compatible HTTP bridge (see [Bridge script maintenance](#bridge-script-maintenance)) |
 | `bridge/openai_compat.py` | OpenAI STT endpoint handler (`POST /v1/audio/transcriptions`) |
+| `bridge/Dockerfile` | Bridge container image (published as `ghcr.io/charnesp/whisperx-cog-bridge`) |
 | `bridge/README.md` | Short pointer for bridge maintainers |
 | `k8s/whisperx-stack.yaml` | Kubernetes manifest (Cog + Redis + bridge); embeds `bridge.py` in a ConfigMap |
 | `docker-compose.yml` | Docker Compose stack equivalent to the k8s pod |
@@ -50,7 +51,10 @@ For implementation details, see the [WhisperX GitHub repo](https://github.com/m-
 | `docs/` | Architecture, bridge, observability, data contracts |
 | `PLANS.md` | Plans and tech-debt tracker |
 
-Published Docker image: `ghcr.io/charnesp/whisperx-cog:latest` (built from `main` via GitHub Actions).
+Published Docker images (built from `main` via GitHub Actions):
+
+- `ghcr.io/charnesp/whisperx-cog:latest` — WhisperX Cog predictor
+- `ghcr.io/charnesp/whisperx-cog-bridge:latest` — HTTP bridge (Replicate + OpenAI STT)
 
 ## Self-hosted deployment
 
@@ -253,7 +257,7 @@ They are consumed in two places:
 
 | Consumer | How bridge scripts are loaded |
 |----------|-------------------------------|
-| Docker Compose | Bind-mount `./bridge/bridge.py` and `./bridge/openai_compat.py` |
+| Docker Compose | `ghcr.io/charnesp/whisperx-cog-bridge:latest` (GHCR, built by GitHub Actions) |
 | Kubernetes | ConfigMap `cog-bridge-script` in `k8s/whisperx-stack.yaml` |
 
 ```bash

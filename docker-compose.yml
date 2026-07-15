@@ -12,14 +12,13 @@
 #   docker compose up -d
 #   curl http://localhost:8080/health
 #   curl -H "Authorization: Bearer $BRIDGE_TOKEN" http://localhost:8080/health-check
+#
+# Bridge image: ghcr.io/charnesp/whisperx-cog-bridge:latest (built by GitHub Actions)
 
 services:
   bridge:
-    image: python:3.9-slim
-    command: ["python", "-u", "/scripts/bridge.py"]
-    volumes:
-      - ./bridge/bridge.py:/scripts/bridge.py:ro
-      - ./bridge/openai_compat.py:/scripts/openai_compat.py:ro
+    image: ghcr.io/charnesp/whisperx-cog-bridge:latest
+    pull_policy: always
     environment:
       BRIDGE_AUTH_TOKEN: ${BRIDGE_TOKEN}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}

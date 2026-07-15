@@ -8,7 +8,7 @@ Full API usage: [README.md](../README.md). Architecture: [ARCHITECTURE.md](./ARC
 
 | Deployment | How loaded |
 |------------|------------|
-| Docker Compose | Bind-mount `./bridge/bridge.py` and `./bridge/openai_compat.py` |
+| Docker Compose | `ghcr.io/charnesp/whisperx-cog-bridge:latest` (GHCR) |
 | Kubernetes | ConfigMap `cog-bridge-script` in `k8s/whisperx-stack.yaml` |
 
 ```bash

@@ -1,0 +1,50 @@
+# Build the bridge Docker image and push to GitHub Container Registry (GHCR)
+# Package: ghcr.io/<owner>/whisperx-cog-bridge
+
+name: Build and push bridge image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "bridge/**"
+      - ".github/workflows/bridge-docker-publish.yml"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set image name (lowercase for GHCR)
+        run: |
+          echo "IMAGE_NAME=${{ env.REGISTRY }}/$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')-bridge" >> $GITHUB_ENV
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build bridge image
+        run: docker build --progress=plain -t ${{ env.IMAGE_NAME }}:${{ github.sha }} ./bridge
+
+      - name: Tag image as latest
+        run: docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:latest
+
+      - name: Push image to GHCR
+        run: |
+          docker push ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}

@@ -2,9 +2,12 @@
 
 Replicate-compatible API proxy for self-hosted Cog + Redis stacks.
 
-**Source of truth:** this file (`bridge/bridge.py`).
+**Source of truth:** `bridge/bridge.py` and `bridge/openai_compat.py`.
 
-The same script is also embedded in the Kubernetes ConfigMap `cog-bridge-script` inside `k8s/whisperx-stack.yaml`. Docker Compose mounts this file directly.
+| Deployment | How loaded |
+|------------|------------|
+| Docker Compose | `ghcr.io/charnesp/whisperx-cog-bridge:latest` — built from `bridge/Dockerfile` via GitHub Actions |
+| Kubernetes | ConfigMap `cog-bridge-script` in `k8s/whisperx-stack.yaml` |
 
 After editing here:
 
