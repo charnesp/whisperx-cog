@@ -1,20 +1,24 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+# Shown to AI when creating OpenSpec artifacts.
+context: |
+  Tech stack: Python 3, Cog, WhisperX (GPU), stdlib HTTP bridge, Redis, k8s/Compose.
+  Testing policy: docs/TESTING.md — NOT strict TDD. Use spec-driven changes with
+  test-with/test-after unit tests on GPU-free paths (json_sanitize, bridge/openai_compat).
+  Harness: make -f Makefile.harness check before done. unittest only (no pytest).
+  predict.py has no default unit tests (GPU); mock Cog in bridge tests.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - Always include a "Non-goals" section
+    - Do not propose strict TDD or test-first workflow; follow docs/TESTING.md
+  design:
+    - Call out test boundaries (mocked Cog, no GPU) when adding bridge or API behavior
+    - Reference docs/TESTING.md for verification approach
+  tasks:
+    - Order: implementation sections first, then a dedicated "## N. Tests" section, then docs/harness
+    - Do not require failing tests before implementation (not strict TDD)
+    - Every bridge or json_sanitize behavior change must list concrete test tasks and `make -f Makefile.harness check`
+    - predict.py GPU behavior: manual smoke only unless PLANS.md scopes GPU CI
+  specs:
+    - Prefer testable acceptance criteria (HTTP status, JSON shape) over subjective quality bars

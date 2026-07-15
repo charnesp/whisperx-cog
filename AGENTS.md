@@ -23,6 +23,7 @@ After editing **`bridge/*.py`**: push to rebuild `ghcr.io/charnesp/whisperx-cog-
 | [docs/BRIDGE.md](./docs/BRIDGE.md) | Bridge behavior, webhook errors, logging, sync |
 | [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md) | Health checks, log prefixes, troubleshooting |
 | [docs/DATA_CONTRACTS.md](./docs/DATA_CONTRACTS.md) | Prediction I/O shapes, JSON boundary rules |
+| [docs/TESTING.md](./docs/TESTING.md) | **Not strict TDD** — test-with/after, harness, OpenSpec task order |
 | [PLANS.md](./PLANS.md) | Active plans, completed work, tech debt |
 
 ## Code layout
@@ -41,10 +42,11 @@ Image: `ghcr.io/charnesp/whisperx-cog:latest`.
 
 ## Critical invariants
 
-1. **JSON output** — all prediction floats pass `json_sanitize.sanitize_for_json` before return. NaN causes Cog webhook failure.
-2. **Bridge image** — k8s and Compose use `ghcr.io/charnesp/whisperx-cog-bridge:latest`; source of truth is `bridge/*.py`; GHCR rebuild on push to `main`.
-3. **cog_runtime disabled** — coglet rejects dict/list in Output; do not enable without fixing Output types.
-4. **Client webhook** — if client sends own `webhook`, bridge does not store in Redis; `GET /predictions/<id>` won't work.
+1. **Testing** — not strict TDD; spec-driven + unit tests on GPU-free code; see [docs/TESTING.md](./docs/TESTING.md). Run `make -f Makefile.harness check` before done.
+2. **JSON output** — all prediction floats pass `json_sanitize.sanitize_for_json` before return. NaN causes Cog webhook failure.
+3. **Bridge image** — k8s and Compose use `ghcr.io/charnesp/whisperx-cog-bridge:latest`; source of truth is `bridge/*.py`; GHCR rebuild on push to `main`.
+4. **cog_runtime disabled** — coglet rejects dict/list in Output; do not enable without fixing Output types.
+5. **Client webhook** — if client sends own `webhook`, bridge does not store in Redis; `GET /predictions/<id>` won't work.
 
 ## Cog / Replicate API (summary)
 

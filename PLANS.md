@@ -4,7 +4,9 @@ Execution plans and tech-debt tracker for agent-first work. Architecture: [docs/
 
 ## Active
 
-_None._
+| Item | Scope | Acceptance |
+|------|-------|------------|
+| `openai-diarized-json-endpoint` | OpenAI `diarized_json` + `gpt-4o-transcribe-diarize` on bridge | See `openspec/changes/openai-diarized-json-endpoint/` |
 
 ## Completed
 
@@ -23,6 +25,7 @@ _None._
 | GPU integration tests in CI | Low | `workflow_dispatch` only; no GPU on default runners |
 | Prometheus metrics on bridge | Low | Logs sufficient for now; see OBSERVABILITY.md |
 | Single-source k8s ConfigMap | Done | `scripts/sync-bridge-to-k8s.py` |
+| OpenAI `known_speaker_references[]` | Low | Post `openai-diarized-json-endpoint`: reference audio clips → named speakers (OpenAI parity); blocked on WhisperX speaker-matching API — v1 returns 400 |
 
 ## How to add a plan
 

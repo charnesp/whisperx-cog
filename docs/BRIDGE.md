@@ -81,7 +81,17 @@ OpenAI-compatible speech-to-text endpoint. Implemented in `bridge/openai_compat.
 | Auth errors | HTTP 401 with OpenAI error shape (`invalid api key` / `authentication_error`) |
 | Logging | `[bridge ext]` — path, bytes, model, format, status, duration (no payload logging) |
 
-Fixed Cog input on this path: `align_output: true`, `diarization: false`, plus mapped `whisper_model`.
+Fixed Cog input on this path: `align_output: true`. Non-diarize requests set `diarization: false`; diarize requests (`model=gpt-4o-transcribe-diarize` or `response_format=diarized_json`) set `diarization: true` with `huggingface_access_token: null` — the HF token is resolved inside the **whisperx** container from `HUGGINGFACE_TOKEN` (see `hf_token.py` / `predict.py`). The bridge does **not** need `HUGGINGFACE_TOKEN` in its own env.
+
+**Diarization path** (`gpt-4o-transcribe-diarize`):
+
+| Parameter | Behavior |
+|-----------|----------|
+| `response_format=diarized_json` | Returns OpenAI `TranscriptionDiarized` with speaker segments |
+| `known_speaker_names[]` | Optional — maps first N WhisperX speakers to provided names |
+| `chunking_strategy` | Accepted (no-op); WhisperX VAD handles long audio |
+| `prompt`, `timestamp_granularities`, `include[]=logprobs` | HTTP 400 |
+| `known_speaker_references[]` | HTTP 400 — not implemented (see [PLANS.md](../PLANS.md) tech debt) |
 
 ## Probes
 

@@ -19,6 +19,8 @@ REQUIRED_FILES = [
     "docs/OBSERVABILITY.md",
     "docs/BRIDGE.md",
     "docs/DATA_CONTRACTS.md",
+    "docs/TESTING.md",
+    "openspec/config.yaml",
     "bridge/bridge.py",
     "scripts/check-bridge-sync.py",
     "scripts/sync-bridge-to-k8s.py",
@@ -28,9 +30,21 @@ AGENTS_LINKS = [
     "docs/ARCHITECTURE.md",
     "docs/OBSERVABILITY.md",
     "docs/BRIDGE.md",
+    "docs/TESTING.md",
     "PLANS.md",
     "README.md",
 ]
+
+# Substrings that must appear in policy docs (not strict TDD constraint).
+TESTING_POLICY_MARKERS = (
+    "Not strict TDD",
+    "test-with / test-after",
+)
+
+OPENSPEC_TESTING_MARKERS = (
+    "NOT strict TDD",
+    "test-with/test-after",
+)
 
 MAKEFILE_TARGETS = ("smoke", "check", "ci", "audit")
 
@@ -108,6 +122,34 @@ def check_bridge_sync() -> list[str]:
     return errors
 
 
+def check_testing_policy() -> list[str]:
+    errors: list[str] = []
+    testing = (ROOT / "docs" / "TESTING.md").read_text()
+    for marker in TESTING_POLICY_MARKERS:
+        if marker in testing:
+            ok(f"docs/TESTING.md contains {marker!r}")
+        else:
+            fail(f"docs/TESTING.md missing {marker!r}")
+            errors.append(f"docs/TESTING.md:{marker}")
+
+    openspec = (ROOT / "openspec" / "config.yaml").read_text()
+    for marker in OPENSPEC_TESTING_MARKERS:
+        if marker in openspec:
+            ok(f"openspec/config.yaml contains {marker!r}")
+        else:
+            fail(f"openspec/config.yaml missing {marker!r}")
+            errors.append(f"openspec/config.yaml:{marker}")
+
+    agents = (ROOT / "AGENTS.md").read_text()
+    if "Not strict TDD" in agents or "not strict TDD" in agents:
+        ok("AGENTS.md states not strict TDD")
+    else:
+        fail("AGENTS.md missing not-strict-TDD invariant")
+        errors.append("AGENTS.md:testing")
+
+    return errors
+
+
 def check_yaml() -> list[str]:
     errors: list[str] = []
     try:
@@ -146,6 +188,9 @@ def main() -> int:
 
     print("\n[makefile]")
     all_errors.extend(check_makefile())
+
+    print("\n[testing policy]")
+    all_errors.extend(check_testing_policy())
 
     if not args.smoke_only:
         print("\n[bridge sync]")

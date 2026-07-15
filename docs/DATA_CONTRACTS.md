@@ -53,7 +53,10 @@ Bridge boundary only — not Cog/Replicate prediction objects.
 | `verbose_json` | `application/json` | OpenAI `TranscriptionVerbose` — top-level `words[]` and/or `segments[]` per `timestamp_granularities` |
 | `srt` | `text/plain; charset=utf-8` | SRT subtitles |
 | `vtt` | `text/vtt; charset=utf-8` | WebVTT |
+| `diarized_json` | `application/json` | OpenAI `TranscriptionDiarized` — `task`, `duration`, `text`, `segments[]` with `id`, `start`, `end`, `speaker`, `text`, `type` |
 
 `verbose_json` maps Cog `output.segments[]` to OpenAI segment fields; missing Whisper metrics use placeholders (`tokens: []`, `seek: 0`, `avg_logprob: 0.0`, etc.).
+
+`diarized_json` groups Cog word-level `speaker` labels into OpenAI speaker turns. WhisperX `SPEAKER_00` → `A`, `SPEAKER_01` → `B`, etc.; optional `known_speaker_names[]` overrides the first N speakers. Requires `model=gpt-4o-transcribe-diarize` and whisperx `HUGGINGFACE_TOKEN` (or Cog `huggingface_access_token` input).
 
 Unit tests: `tests/test_openai_stt.py`

@@ -1,5 +1,9 @@
 # Harness Engineering — deterministic agent commands
 # Usage: make -f Makefile.harness <target>
+#
+# Testing policy (NOT strict TDD): docs/TESTING.md
+#   check = smoke + unittest on GPU-free modules (bridge, json_sanitize)
+#   ci    = check + harness audit (docs, openspec policy, bridge sync)
 
 PYTHON ?= python3
 
@@ -8,7 +12,7 @@ PYTHON ?= python3
 ## Fast checks (no GPU, no cog): bridge sync, compile, yaml, harness artifacts
 smoke:
 	$(PYTHON) scripts/check-bridge-sync.py
-	$(PYTHON) -m py_compile json_sanitize.py bridge/bridge.py bridge/openai_compat.py scripts/bridge_k8s.py scripts/check-bridge-sync.py scripts/sync-bridge-to-k8s.py scripts/harness_audit.py
+	$(PYTHON) -m py_compile json_sanitize.py hf_token.py bridge/bridge.py bridge/openai_compat.py scripts/bridge_k8s.py scripts/check-bridge-sync.py scripts/sync-bridge-to-k8s.py scripts/harness_audit.py
 	$(PYTHON) scripts/harness_audit.py --smoke-only
 
 ## smoke + unit tests

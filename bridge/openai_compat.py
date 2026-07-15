@@ -24,10 +24,14 @@ OPENAI_STT_MAX_FILE_SIZE_BYTES = OPENAI_STT_MAX_FILE_SIZE_MB * 1024 * 1024
 
 MODEL_MAP = {
     "whisper-1": "large-v3-turbo",
+    "gpt-4o-transcribe-diarize": "large-v3-turbo",
     "large-v3": "large-v3",
     "large-v3-turbo": "large-v3-turbo",
     "tiny": "tiny",
 }
+
+DIARIZE_MODEL = "gpt-4o-transcribe-diarize"
+DIARIZE_ALLOWED_RESPONSE_FORMATS = frozenset({"json", "text", "diarized_json"})
 
 OPENAI_AUDIO_EXTENSIONS = frozenset(
     {"flac", "mp3", "mp4", "mpeg", "mpga", "m4a", "ogg", "wav", "webm"}
@@ -64,6 +68,32 @@ MOCK_COG_OUTPUT = {
                 {"word": "How", "start": 2.5, "end": 3.2, "score": 0.97},
                 {"word": "are", "start": 3.2, "end": 4.0, "score": 0.96},
                 {"word": "you", "start": 4.0, "end": 5.0, "score": 0.95},
+            ],
+        },
+    ],
+    "detected_language": "en",
+}
+
+MOCK_COG_DIARIZED_OUTPUT = {
+    "segments": [
+        {
+            "start": 0.0,
+            "end": 2.5,
+            "text": "Hello world",
+            "speaker": "SPEAKER_00",
+            "words": [
+                {"word": "Hello", "start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"},
+                {"word": "world", "start": 1.0, "end": 2.5, "speaker": "SPEAKER_00"},
+            ],
+        },
+        {
+            "start": 2.5,
+            "end": 5.0,
+            "text": "Hi there",
+            "speaker": "SPEAKER_01",
+            "words": [
+                {"word": "Hi", "start": 2.5, "end": 3.2, "speaker": "SPEAKER_01"},
+                {"word": "there", "start": 3.2, "end": 5.0, "speaker": "SPEAKER_01"},
             ],
         },
     ],
@@ -219,6 +249,82 @@ def _extension_from_filename(filename: str) -> str:
     return filename.rsplit(".", 1)[-1].lower()
 
 
+def _parse_include(fs: MultipartForm) -> List[str]:
+    values: List[str] = []
+    for key in ("include[]", "include"):
+        values.extend(_field_values(fs, key))
+    return values
+
+
+def _parse_known_speaker_names(fs: MultipartForm) -> List[str]:
+    values: List[str] = []
+    for key in ("known_speaker_names[]", "known_speaker_names"):
+        values.extend(_field_values(fs, key))
+    return [v for v in values if v]
+
+
+def is_diarize_request(model: str, response_format: str) -> bool:
+    return model == DIARIZE_MODEL or response_format == "diarized_json"
+
+
+def _validate_diarize_request(
+    fs: MultipartForm,
+    *,
+    model: str,
+    response_format: str,
+    prompt: Optional[str],
+    timestamp_granularities: List[str],
+) -> Optional[Tuple[int, Dict[str, Any]]]:
+    diarize = is_diarize_request(model, response_format)
+    if not diarize:
+        return None
+
+    if response_format == "diarized_json" and model != DIARIZE_MODEL:
+        return openai_error(
+            "diarized_json requires model gpt-4o-transcribe-diarize",
+            "invalid_request_error",
+            400,
+        )
+
+    if model == DIARIZE_MODEL and response_format not in DIARIZE_ALLOWED_RESPONSE_FORMATS:
+        return openai_error(
+            f"response_format '{response_format}' not supported for {DIARIZE_MODEL}",
+            "invalid_request_error",
+            400,
+        )
+
+    if prompt and prompt.strip():
+        return openai_error(
+            "prompt is not supported for diarized transcription",
+            "invalid_request_error",
+            400,
+        )
+
+    if timestamp_granularities:
+        return openai_error(
+            "timestamp_granularities is not supported for diarized transcription",
+            "invalid_request_error",
+            400,
+        )
+
+    if "logprobs" in _parse_include(fs):
+        return openai_error(
+            "include logprobs is not supported for diarized transcription",
+            "invalid_request_error",
+            400,
+        )
+
+    for key in ("known_speaker_references[]", "known_speaker_references"):
+        if key in fs:
+            return openai_error(
+                "known_speaker_references is not supported yet (see PLANS.md)",
+                "invalid_request_error",
+                400,
+            )
+
+    return None
+
+
 def _parse_timestamp_granularities(fs: MultipartForm) -> List[str]:
     values: List[str] = []
     for key in ("timestamp_granularities[]", "timestamp_granularities"):
@@ -276,7 +382,7 @@ def validate_transcription_request(
         return None, temp_err
 
     response_format = _field_value(fs, "response_format", "json") or "json"
-    allowed_formats = {"json", "text", "verbose_json", "srt", "vtt"}
+    allowed_formats = {"json", "text", "verbose_json", "srt", "vtt", "diarized_json"}
     if response_format not in allowed_formats:
         return None, openai_error(
             f"response_format '{response_format}' not supported",
@@ -287,6 +393,19 @@ def validate_transcription_request(
     language = _field_value(fs, "language")
     prompt = _field_value(fs, "prompt")
     timestamp_granularities = _parse_timestamp_granularities(fs)
+    known_speaker_names = _parse_known_speaker_names(fs)
+
+    diarize_err = _validate_diarize_request(
+        fs,
+        model=model,
+        response_format=response_format,
+        prompt=prompt,
+        timestamp_granularities=timestamp_granularities,
+    )
+    if diarize_err:
+        return None, diarize_err
+
+    is_diarize = is_diarize_request(model, response_format)
 
     return {
         "filename": filename,
@@ -299,6 +418,8 @@ def validate_transcription_request(
         "temperature": temperature,
         "response_format": response_format,
         "timestamp_granularities": timestamp_granularities,
+        "is_diarize": is_diarize,
+        "known_speaker_names": known_speaker_names,
     }, None
 
 
@@ -312,14 +433,14 @@ def build_audio_data_uri(file_bytes: bytes, extension: str) -> str:
 
 def build_cog_input(parsed: Dict[str, Any]) -> Dict[str, Any]:
     data_uri = build_audio_data_uri(parsed["file_bytes"], parsed["extension"])
-    return {
+    is_diarize = parsed.get("is_diarize", False)
+    cog_input: Dict[str, Any] = {
         "audio_file": data_uri,
         "whisper_model": parsed["whisper_model"],
         "language": parsed["language"],
-        "initial_prompt": parsed["prompt"],
         "temperature": parsed["temperature"],
         "align_output": True,
-        "diarization": False,
+        "diarization": is_diarize,
         "batch_size": 64,
         "vad_onset": 0.500,
         "vad_offset": 0.363,
@@ -327,8 +448,13 @@ def build_cog_input(parsed: Dict[str, Any]) -> Dict[str, Any]:
         "language_detection_max_tries": 5,
         "hotwords": None,
         "huggingface_access_token": None,
+        "min_speakers": None,
+        "max_speakers": None,
         "debug": False,
     }
+    if not is_diarize:
+        cog_input["initial_prompt"] = parsed["prompt"]
+    return cog_input
 
 
 def call_cog_sync(
@@ -502,6 +628,169 @@ def _format_timestamp_vtt(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
+def _speaker_letter(index: int) -> str:
+    """Map 0-based speaker index to OpenAI letter label (A, B, …)."""
+    return chr(ord("A") + index)
+
+
+def _build_speaker_label_map(
+    speaker_ids: List[str],
+    known_speaker_names: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    names = known_speaker_names or []
+    mapping: Dict[str, str] = {}
+    letter_idx = 0
+    for idx, speaker_id in enumerate(speaker_ids):
+        if idx < len(names):
+            mapping[speaker_id] = names[idx]
+        else:
+            mapping[speaker_id] = _speaker_letter(letter_idx)
+            letter_idx += 1
+    return mapping
+
+
+def _flatten_words_with_speaker(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    words: List[Dict[str, Any]] = []
+    for seg in segments:
+        seg_speaker = seg.get("speaker")
+        seg_words = seg.get("words") or []
+        if seg_words:
+            for word in seg_words:
+                words.append(
+                    {
+                        "word": word.get("word", ""),
+                        "start": word.get("start", 0.0),
+                        "end": word.get("end", 0.0),
+                        "speaker": word.get("speaker") or seg_speaker,
+                    }
+                )
+        elif seg_speaker and seg.get("text"):
+            words.append(
+                {
+                    "word": (seg.get("text") or "").strip(),
+                    "start": seg.get("start", 0.0),
+                    "end": seg.get("end", 0.0),
+                    "speaker": seg_speaker,
+                }
+            )
+    return words
+
+
+def _group_words_into_diarized_segments(
+    words: List[Dict[str, Any]],
+    speaker_map: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    if not words:
+        return []
+
+    diarized: List[Dict[str, Any]] = []
+    current_speaker: Optional[str] = None
+    current_words: List[Dict[str, Any]] = []
+
+    def flush() -> None:
+        if not current_words:
+            return
+        text = " ".join(w["word"] for w in current_words).strip()
+        mapped = speaker_map.get(current_speaker or "", "A")
+        diarized.append(
+            {
+                "start": float(current_words[0]["start"]),
+                "end": float(current_words[-1]["end"]),
+                "speaker": mapped,
+                "text": text,
+            }
+        )
+
+    for word in words:
+        speaker = word.get("speaker") or "SPEAKER_00"
+        if current_speaker is not None and speaker != current_speaker:
+            flush()
+            current_words = []
+        current_speaker = speaker
+        current_words.append(word)
+
+    flush()
+    return diarized
+
+
+def convert_to_diarized_json(
+    cog_output: Dict[str, Any],
+    *,
+    known_speaker_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    segments = cog_output.get("segments") or []
+    words = _flatten_words_with_speaker(segments)
+
+    speaker_order: List[str] = []
+    for word in words:
+        sid = word.get("speaker") or "SPEAKER_00"
+        if sid not in speaker_order:
+            speaker_order.append(sid)
+
+    if not speaker_order and segments:
+        for seg in segments:
+            sid = seg.get("speaker")
+            if sid and sid not in speaker_order:
+                speaker_order.append(sid)
+
+    if not speaker_order:
+        text = _join_segment_text(segments)
+        return {
+            "task": "transcribe",
+            "duration": _output_duration(segments),
+            "text": text,
+            "segments": [
+                {
+                    "id": "0",
+                    "start": 0.0,
+                    "end": _output_duration(segments),
+                    "speaker": (known_speaker_names or ["A"])[0]
+                    if known_speaker_names
+                    else "A",
+                    "text": text,
+                    "type": "transcript.text.segment",
+                }
+            ],
+        }
+
+    speaker_map = _build_speaker_label_map(speaker_order, known_speaker_names)
+    diarized_segments = _group_words_into_diarized_segments(words, speaker_map)
+
+    if not diarized_segments:
+        diarized_segments = [
+            {
+                "start": float(seg.get("start", 0.0)),
+                "end": float(seg.get("end", 0.0)),
+                "speaker": speaker_map.get(seg.get("speaker", ""), "A"),
+                "text": (seg.get("text") or "").strip(),
+            }
+            for seg in segments
+            if seg.get("text")
+        ]
+
+    openai_segments = [
+        {
+            "id": str(idx),
+            "start": seg["start"],
+            "end": seg["end"],
+            "speaker": seg["speaker"],
+            "text": seg["text"],
+            "type": "transcript.text.segment",
+        }
+        for idx, seg in enumerate(diarized_segments)
+    ]
+
+    text = " ".join(seg["text"] for seg in openai_segments if seg["text"]).strip()
+    duration = _output_duration(diarized_segments) if diarized_segments else 0.0
+
+    return {
+        "task": "transcribe",
+        "duration": duration,
+        "text": text,
+        "segments": openai_segments,
+    }
+
+
 def convert_to_srt(cog_output: Dict[str, Any]) -> str:
     segments = cog_output.get("segments") or []
     blocks: List[str] = []
@@ -532,6 +821,7 @@ def convert_cog_output(
     *,
     temperature: float = 0.0,
     timestamp_granularities: Optional[List[str]] = None,
+    known_speaker_names: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, str], bytes]:
     if response_format == "json":
         return (
@@ -542,6 +832,15 @@ def convert_cog_output(
         return (
             {"Content-Type": "text/plain; charset=utf-8"},
             convert_to_text(cog_output).encode("utf-8"),
+        )
+    if response_format == "diarized_json":
+        payload = convert_to_diarized_json(
+            cog_output,
+            known_speaker_names=known_speaker_names,
+        )
+        return (
+            {"Content-Type": "application/json"},
+            json.dumps(payload).encode("utf-8"),
         )
     if response_format == "verbose_json":
         payload = convert_to_verbose_json(
@@ -614,6 +913,8 @@ def handle_transcription_request(
     meta["bytes"] = len(parsed["file_bytes"])
     meta["model"] = parsed["model"]
     meta["response_format"] = parsed["response_format"]
+    if parsed.get("is_diarize"):
+        meta["diarize"] = True
 
     cog_input = build_cog_input(parsed)
     cog_output, cog_err, request_meta = call_cog_sync(
@@ -633,5 +934,6 @@ def handle_transcription_request(
         parsed["response_format"],
         temperature=float(parsed["temperature"] or 0.0),
         timestamp_granularities=parsed["timestamp_granularities"],
+        known_speaker_names=parsed.get("known_speaker_names"),
     )
     return 200, resp_headers, body, meta

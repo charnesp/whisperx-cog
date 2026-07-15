@@ -19,6 +19,7 @@ from whisperx.audio import N_SAMPLES, log_mel_spectrogram
 import whisperx
 from whisperx.diarize import DiarizationPipeline
 from json_sanitize import sanitize_error_message, sanitize_for_json
+from hf_token import require_diarization_token
 import tempfile
 import time
 import torch
@@ -316,21 +317,15 @@ class Predictor(BasePredictor):
                     )
 
             if diarization:
-                if not huggingface_access_token or not huggingface_access_token.strip():
-                    print(
-                        "Warning: diarization requested but no HuggingFace token provided; skipping diarization. "
-                        "Set huggingface_access_token to enable speaker labels.",
-                        flush=True,
-                    )
-                else:
-                    result = diarize(
-                        audio,
-                        result,
-                        debug,
-                        huggingface_access_token,
-                        min_speakers,
-                        max_speakers,
-                    )
+                hf_token = require_diarization_token(diarization, huggingface_access_token)
+                result = diarize(
+                    audio,
+                    result,
+                    debug,
+                    hf_token,
+                    min_speakers,
+                    max_speakers,
+                )
 
             if debug:
                 print(

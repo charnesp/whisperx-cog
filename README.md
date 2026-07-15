@@ -129,16 +129,32 @@ curl -sS http://localhost:8080/v1/audio/transcriptions \
   -F language=fr
 ```
 
-**Supported `response_format` values:** `json` (default), `text`, `verbose_json`, `srt`, `vtt`.
+**Supported `response_format` values:** `json` (default), `text`, `verbose_json`, `srt`, `vtt`, `diarized_json`.
+
+**Diarized transcription** (speaker labels):
+
+```bash
+curl -sS http://localhost:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $BRIDGE_TOKEN" \
+  -F file=@sample.wav \
+  -F model=gpt-4o-transcribe-diarize \
+  -F response_format=diarized_json \
+  -F chunking_strategy=auto
+```
+
+Requires `HUGGINGFACE_TOKEN` on the **whisperx** container (already set in k8s/compose). The bridge does not need the token.
 
 **Model mapping** (OpenAI name → Cog `whisper_model`):
 
-| Client `model` | Cog `whisper_model` |
-|----------------|---------------------|
-| `whisper-1` | `large-v3-turbo` |
-| `large-v3` | `large-v3` |
-| `large-v3-turbo` | `large-v3-turbo` |
-| `tiny` | `tiny` |
+| Client `model` | Cog `whisper_model` | Diarization |
+|----------------|---------------------|-------------|
+| `whisper-1` | `large-v3-turbo` | off |
+| `gpt-4o-transcribe-diarize` | `large-v3-turbo` | on |
+| `large-v3` | `large-v3` | off |
+| `large-v3-turbo` | `large-v3-turbo` | off |
+| `tiny` | `tiny` | off |
+
+**Not supported (v1):** `known_speaker_references[]` returns HTTP 400 — see [PLANS.md](./PLANS.md) for follow-up.
 
 **Supported audio extensions** (OpenAI official allowlist): `flac`, `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `ogg`, `wav`, `webm`.
 
@@ -157,6 +173,16 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8080/v1", api_key=os.environ["BRIDGE_TOKEN"])
 result = client.audio.transcriptions.create(model="whisper-1", file=open("sample.ogg", "rb"))
 print(result.text)
+
+# Diarized transcription (requires HUGGINGFACE_TOKEN on whisperx container)
+result = client.audio.transcriptions.create(
+    model="gpt-4o-transcribe-diarize",
+    file=open("sample.wav", "rb"),
+    response_format="diarized_json",
+    chunking_strategy="auto",
+)
+for seg in result.segments:
+    print(seg.speaker, seg.text)
 ```
 
 Audio is passed to Cog as a base64 **data URI** in JSON (`input.audio_file`); see [docs/BRIDGE.md](./docs/BRIDGE.md).
@@ -343,7 +369,7 @@ To use the self-hosted bridge stacks with a locally built image, replace `ghcr.i
 
 ## Maintainer notes
 
-**[AGENTS.md](./AGENTS.md)** is the agent entry map; deep reference lives in **`docs/`** (architecture, bridge, observability, data contracts).
+**[AGENTS.md](./AGENTS.md)** is the agent entry map; deep reference lives in **`docs/`** (architecture, bridge, observability, data contracts, [testing policy](./docs/TESTING.md)).
 
 **Harness commands** (no GPU required):
 

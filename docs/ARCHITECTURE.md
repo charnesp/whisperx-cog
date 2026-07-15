@@ -58,4 +58,5 @@ System map for whisperx-cog. User-facing setup lives in [README.md](../README.md
 - [BRIDGE.md](./BRIDGE.md) — bridge behavior, errors, logging
 - [OBSERVABILITY.md](./OBSERVABILITY.md) — logs, health checks, troubleshooting
 - [DATA_CONTRACTS.md](./DATA_CONTRACTS.md) — prediction input/output shapes
+- [TESTING.md](./TESTING.md) — not strict TDD; harness and OpenSpec test ordering
 - [AGENTS.md](../AGENTS.md) — agent entry map and harness commands
