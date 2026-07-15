@@ -112,6 +112,21 @@ The Cog server sends the prediction result as JSON (e.g. to the webhook). Python
 - With `Prefer: respond-async`, the server returns `202 Accepted` and processes in the background. Updates are delivered **only via webhooks**; polling for status is not supported by Cog.
 - The bridge in `k8s/whisperx-stack.yaml` can inject an internal webhook and store the final prediction in Redis for `GET /predictions/<id>`. If the client provides its own webhook, the bridge does not store the result.
 
+### Bridge (`k8s/whisperx-stack.yaml` ConfigMap)
+
+- **Logs:** Significant actions use stdout prefixes **`[bridge ext]`** (HTTP **edge**: clients **outside** the pod — `GET`/`POST` API, cache outcome for those clients) and **`[bridge int]`** (in-pod legs: **Redis**, **Cog** HTTP proxy, **Cog→bridge webhook**). **`GET /health`** and **`GET /health-check`** stay silent. **`[bridge]`** is only the process boot line. Peers on loopback (`127.0.0.1` / `::1`) are treated as in-pod, so their API calls log under **`int`** on the edge logger. Use `kubectl logs` on the bridge container for troubleshooting.
+- **Webhook → Redis:** Cog POSTs completion payloads to `http://localhost:8080/<WEBHOOK_SECRET>/webhook?id=<prediction_id>`. The bridge runs a minimal **RESP2** Redis client (not `redis-py`), caps cached JSON at **200 MiB** (`REDIS_MAX_BULK_BYTES`), and rejects **`Transfer-Encoding: chunked`** with **501** (Cog should send **`Content-Length`**).
+- **Webhook HTTP errors:**
+  - **400** `invalid_content_length` — malformed or negative `Content-Length`.
+  - **400** `invalid_prediction_id` — `id` query parameter does not match `^[a-zA-Z0-9_-]{1,64}$`; body is drained when `Content-Length` was already validated.
+  - **413** `payload_too_large` — body larger than the configured max; response includes **`Connection: close`**, then the bridge drains the body.
+  - **501** `unsupported_transfer_encoding` — chunked body not supported; **`Connection: close`**, then a **best-effort drain** (up to 64 MiB) of unread bytes.
+  - **503** `redis_set_failed` — Redis unreachable, protocol error, or unexpected reply; JSON body includes **`detail`**. With the Cog version you run, **webhook delivery may be retried on 5xx** (verify in that version’s source or by observing a second POST after a forced **503** — not guaranteed by the public Cog HTTP doc alone).
+- **GET** `GET /predictions/<id>`: **`id`** must match the same **`^[a-zA-Z0-9_-]{1,64}$`** pattern; otherwise **400** `invalid_prediction_id`.
+- **GET cache vs Cog:** A **Redis hit** returns the stored JSON immediately. **Cache miss** (`GET` returns Redis null bulk) or **Redis read failure** is logged distinctly; the handler then **proxies to Cog** (same status behavior as before for the API client on read errors).
+- **Readiness probe:** For **`GET /health-check`** with **`silent`** proxying, a **malformed `Content-Length`** is treated as **no body** (`0`) so the probe still forwards to Cog instead of returning **400** from the bridge.
+- **Keep-alive:** Error responses that may leave the socket in an ambiguous state (**400**, **413**, **501**, **503** on the webhook path) send **`Connection: close`**.
+
 ### Health checks
 
 - **Cog** exposes **GET /health-check** (always 200; check JSON `status`: READY, STARTING, BUSY, SETUP_FAILED, DEFUNCT, UNHEALTHY). Optional **`healthcheck()`** on the Predictor: return `False` to set status UNHEALTHY.
