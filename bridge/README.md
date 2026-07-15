@@ -11,6 +11,7 @@ After editing here:
 ```bash
 python3 scripts/sync-bridge-to-k8s.py    # update k8s ConfigMap
 python3 scripts/check-bridge-sync.py     # verify both copies match
+make -f Makefile.harness smoke           # full pre-commit gate (includes sync check)
 ```
 
 See [README.md](../README.md) (self-hosted deployment) and [AGENTS.md](../AGENTS.md) (bridge behavior, logging, error codes).

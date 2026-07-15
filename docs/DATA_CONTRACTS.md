@@ -1,0 +1,35 @@
+# Data contracts
+
+Shapes at system boundaries. Cog/Replicate API references: [README.md](../README.md), [AGENTS.md](../AGENTS.md).
+
+## Prediction object (Cog / bridge / webhook)
+
+| Field | Type | When present |
+|-------|------|--------------|
+| `status` | string | Always — `succeeded`, `failed`, `canceled`, `starting`, `processing` |
+| `output` | object \| null | `succeeded`; null on failure |
+| `error` | string | `failed` only |
+| `metrics` | object | Optional — e.g. `{ "predict_time": 12.34 }` |
+
+## Success output (`predict.py` → `Output`)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `segments` | array | Utterances with `start`, `end`, `text` |
+| `segments[].words` | array | Optional — alignment enabled |
+| `segments[].speaker` | string | Optional — diarization enabled |
+| `detected_language` | string | ISO code |
+| `speaker_embeddings` | object \| null | `{ "SPEAKER_00": [float, ...] }` or null |
+
+All floats in `output` must pass **`sanitize_for_json()`** before return (no NaN/inf).
+
+## Bridge prediction ID
+
+- Pattern: `^[a-zA-Z0-9_-]{1,64}$`
+- Bridge generates 24-char hex id if client omits `id` on `POST /predictions`
+
+## JSON boundary rule
+
+**Invariant:** Any value crossing the Cog HTTP / webhook boundary is processed by `json_sanitize.sanitize_for_json`. Do not return raw WhisperX tensors or un-sanitized floats from `predict()`.
+
+Unit tests: `tests/test_json_sanitize.py`

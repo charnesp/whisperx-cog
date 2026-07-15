@@ -3,7 +3,6 @@ from typing import Any, Optional
 
 import gc
 import importlib
-import math
 import os
 import shutil
 import warnings
@@ -19,6 +18,7 @@ warnings.filterwarnings(
 from whisperx.audio import N_SAMPLES, log_mel_spectrogram
 import whisperx
 from whisperx.diarize import DiarizationPipeline
+from json_sanitize import sanitize_error_message, sanitize_for_json
 import tempfile
 import time
 import torch
@@ -41,20 +41,6 @@ WHISPER_MODEL_HF_IDS = {
 }
 
 
-def _sanitize_error_message(msg: str, max_len: int = 500) -> str:
-    """Avoid logging binary or huge payloads (e.g. multipart body) in exception messages."""
-    if not msg:
-        return msg
-    # Truncate long messages (e.g. request body)
-    if len(msg) > max_len:
-        return msg[:max_len] + "... (truncated)"
-    # If message looks like binary or contains many non-printable chars, omit it
-    non_printable = sum(1 for c in msg if ord(c) < 32 and c not in "\n\r\t")
-    if non_printable > 50 or "\\x" in repr(msg):
-        return "(binary or non-printable data omitted)"
-    return msg
-
-
 def _resolve_input_default(val: Any) -> Any:
     """When predict() is called from Python (not via Cog API), omitted args get the Input()
     object (Pydantic FieldInfo) as value. Return the actual default in that case."""
@@ -74,38 +60,6 @@ def _resolve_whisper_model_path(whisper_model: str) -> str:
     ):
         return local_path
     return WHISPER_MODEL_HF_IDS[whisper_model]
-
-
-def _sanitize_for_json(obj: Any) -> Any:
-    """Recursively replace NaN/inf and convert numpy/torch types so the result is JSON-serializable.
-    Prevents 'Out of range float values are not JSON compliant' when Cog sends the webhook.
-    """
-    if obj is None:
-        return None
-    if isinstance(obj, (bool, int, str)):
-        return obj
-    if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return None
-        return obj
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize_for_json(v) for v in obj]
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    # numpy/torch scalar
-    if hasattr(obj, "item"):
-        try:
-            x = obj.item()
-            return _sanitize_for_json(x)
-        except (ValueError, RuntimeError):
-            return None
-    # numpy array or torch tensor
-    if hasattr(obj, "tolist"):
-        try:
-            return _sanitize_for_json(obj.tolist())
-        except (ValueError, RuntimeError):
-            return None
-    return obj
 
 
 class Output(BaseModel):
@@ -212,7 +166,7 @@ class Predictor(BasePredictor):
                 debug=debug,
             )
         except Exception as e:
-            safe_msg = _sanitize_error_message(str(e))
+            safe_msg = sanitize_error_message(str(e))
             raise RuntimeError(f"Prediction failed: {type(e).__name__}: {safe_msg}") from None
 
     def _run_predict(
@@ -386,7 +340,7 @@ class Predictor(BasePredictor):
 
         # Normalize to Output types (list, str, Optional[dict]) so schema/validation never fails
         raw_segments = result.get("segments")
-        segments = _sanitize_for_json(raw_segments) if raw_segments is not None else []
+        segments = sanitize_for_json(raw_segments) if raw_segments is not None else []
         if not isinstance(segments, list):
             segments = []
 
@@ -397,7 +351,7 @@ class Predictor(BasePredictor):
             detected_language_str = str(raw_lang) if raw_lang is not None else ""
 
         raw_embeddings = result.get("speaker_embeddings")
-        embeddings = _sanitize_for_json(raw_embeddings) if raw_embeddings is not None else None
+        embeddings = sanitize_for_json(raw_embeddings) if raw_embeddings is not None else None
         if embeddings is not None and not isinstance(embeddings, dict):
             embeddings = None
 

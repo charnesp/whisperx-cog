@@ -43,7 +43,10 @@ For implementation details, see the [WhisperX GitHub repo](https://github.com/m-
 | `k8s/whisperx-stack.yaml` | Kubernetes manifest (Cog + Redis + bridge); embeds `bridge.py` in a ConfigMap |
 | `docker-compose.yml` | Docker Compose stack equivalent to the k8s pod |
 | `.env.example` | Environment template for Docker Compose secrets |
-| `AGENTS.md` | Maintainer and AI-agent reference (API gotchas, bridge behavior, conventions) |
+| `AGENTS.md` | Agent entry map → `docs/` for depth |
+| `Makefile.harness` | Harness: `make -f Makefile.harness smoke/check/ci` |
+| `docs/` | Architecture, bridge, observability, data contracts |
+| `PLANS.md` | Plans and tech-debt tracker |
 
 Published Docker image: `ghcr.io/charnesp/whisperx-cog:latest` (built from `main` via GitHub Actions).
 
@@ -287,9 +290,16 @@ To use the self-hosted bridge stacks with a locally built image, replace `ghcr.i
 
 ## Maintainer notes
 
-**[AGENTS.md](./AGENTS.md)** is the detailed reference for AI agents and maintainers: JSON/NaN sanitization, Cog runtime notes, bridge webhook HTTP errors, cache behavior, and code conventions.
+**[AGENTS.md](./AGENTS.md)** is the agent entry map; deep reference lives in **`docs/`** (architecture, bridge, observability, data contracts).
 
-When changing bridge behavior, always run `scripts/check-bridge-sync.py` before committing.
+**Harness commands** (no GPU required):
+
+```bash
+make -f Makefile.harness smoke   # fast checks
+make -f Makefile.harness ci        # full gate (CI)
+```
+
+When changing bridge behavior: edit `bridge/bridge.py` → `python3 scripts/sync-bridge-to-k8s.py` → `make -f Makefile.harness smoke`.
 
 ## Citation
 
