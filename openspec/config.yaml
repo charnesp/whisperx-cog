@@ -1,24 +1,27 @@
 schema: spec-driven
 
+# Project-wide OpenSpec config (single source of truth for AI artifact rules).
+# Per-change openspec/changes/*/.openspec.yaml holds metadata only (schema, created).
+#
 # Shown to AI when creating OpenSpec artifacts.
 context: |
   Tech stack: Python 3, Cog, WhisperX (GPU), stdlib HTTP bridge, Redis, k8s/Compose.
-  Testing policy: docs/TESTING.md — NOT strict TDD. Use spec-driven changes with
-  test-with/test-after unit tests on GPU-free paths (json_sanitize, bridge/openai_compat).
-  Harness: make -f Makefile.harness check before done. unittest only (no pytest).
-  predict.py has no default unit tests (GPU); mock Cog in bridge tests.
+  Testing policy: docs/TESTING.md — strict TDD required (RED → GREEN → REFACTOR).
+  No production code without a failing test first. Verify RED before implementing.
+  GPU-free paths (json_sanitize, bridge/openai_compat): full strict TDD with unittest mocks.
+  Harness: make -f Makefile.harness check after each cycle and before done.
 
 rules:
   proposal:
     - Always include a "Non-goals" section
-    - Do not propose strict TDD or test-first workflow; follow docs/TESTING.md
+    - State how behavior will be verified with strict TDD; follow docs/TESTING.md
   design:
-    - Call out test boundaries (mocked Cog, no GPU) when adding bridge or API behavior
-    - Reference docs/TESTING.md for verification approach
+    - Call out test boundaries (mocked Cog, no GPU) and testable seams for TDD
+    - Reference docs/TESTING.md for RED/GREEN/REFACTOR workflow
   tasks:
-    - Order: implementation sections first, then a dedicated "## N. Tests" section, then docs/harness
-    - Do not require failing tests before implementation (not strict TDD)
-    - Every bridge or json_sanitize behavior change must list concrete test tasks and `make -f Makefile.harness check`
-    - predict.py GPU behavior: manual smoke only unless PLANS.md scopes GPU CI
+    - Strict TDD: for each behavior, order tasks test-first (failing test) → minimal impl → refactor
+    - Do not batch all implementation before tests; do not ship code without its failing test first
+    - Every bridge or json_sanitize behavior change must list RED, GREEN, and `make -f Makefile.harness check`
+    - predict.py GPU pipeline: TDD pure helpers; full GPU path = manual smoke unless PLANS.md scopes GPU CI
   specs:
-    - Prefer testable acceptance criteria (HTTP status, JSON shape) over subjective quality bars
+    - Prefer testable acceptance criteria (HTTP status, JSON shape) that map 1:1 to failing tests

@@ -35,15 +35,17 @@ AGENTS_LINKS = [
     "README.md",
 ]
 
-# Substrings that must appear in policy docs (not strict TDD constraint).
+# Substrings that must appear in policy docs (strict TDD constraint).
 TESTING_POLICY_MARKERS = (
-    "Not strict TDD",
-    "test-with / test-after",
+    "Strict TDD",
+    "RED",
+    "GREEN",
+    "REFACTOR",
 )
 
 OPENSPEC_TESTING_MARKERS = (
-    "NOT strict TDD",
-    "test-with/test-after",
+    "strict TDD",
+    "RED → GREEN → REFACTOR",
 )
 
 MAKEFILE_TARGETS = ("smoke", "check", "ci", "audit")
@@ -141,10 +143,10 @@ def check_testing_policy() -> list[str]:
             errors.append(f"openspec/config.yaml:{marker}")
 
     agents = (ROOT / "AGENTS.md").read_text()
-    if "Not strict TDD" in agents or "not strict TDD" in agents:
-        ok("AGENTS.md states not strict TDD")
+    if "Strict TDD" in agents:
+        ok("AGENTS.md states strict TDD")
     else:
-        fail("AGENTS.md missing not-strict-TDD invariant")
+        fail("AGENTS.md missing strict-TDD invariant")
         errors.append("AGENTS.md:testing")
 
     return errors

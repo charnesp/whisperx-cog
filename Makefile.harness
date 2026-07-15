@@ -1,8 +1,8 @@
 # Harness Engineering — deterministic agent commands
 # Usage: make -f Makefile.harness <target>
 #
-# Testing policy (NOT strict TDD): docs/TESTING.md
-#   check = smoke + unittest on GPU-free modules (bridge, json_sanitize)
+# Testing policy (strict TDD): docs/TESTING.md — RED → GREEN → REFACTOR
+#   check = smoke + unittest (run after each TDD cycle)
 #   ci    = check + harness audit (docs, openspec policy, bridge sync)
 
 PYTHON ?= python3

@@ -71,6 +71,6 @@ No Prometheus/OpenTelemetry in this repo today. Operational signals:
 
 ```bash
 make -f Makefile.harness smoke   # sync + compile + yaml
-make -f Makefile.harness check   # + unit tests (not strict TDD — see docs/TESTING.md)
+make -f Makefile.harness check   # + unit tests (strict TDD gate — see docs/TESTING.md)
 make -f Makefile.harness audit   # harness artifact audit
 ```

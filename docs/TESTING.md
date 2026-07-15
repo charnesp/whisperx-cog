@@ -2,56 +2,48 @@
 
 How this repo verifies behavior. Complements [Harness Engineering](https://openai.com/index/harness-engineering/) (`Makefile.harness`, `scripts/harness_audit.py`).
 
-## Not strict TDD
+## Strict TDD (required)
 
-This project **does not** use test-driven development in the strict sense (failing test first → minimal code → refactor). Do **not** require red-green-refactor cycles or delete implementation to “restart from tests.”
+This project **requires test-driven development** in the strict sense:
 
-**Adopted model:** spec-driven changes (OpenSpec) with **test-with / test-after** unit tests on deterministic, GPU-free code paths.
+1. **RED** — write a failing test for one behavior
+2. **Verify RED** — run `make -f Makefile.harness check` and confirm the new test fails for the expected reason
+3. **GREEN** — write the minimal production code to pass
+4. **Verify GREEN** — full test suite green
+5. **REFACTOR** — clean up while staying green
 
-| Strict TDD | This repo |
-|------------|-----------|
-| Test before any production code | Implementation and tests may land together |
-| Watch test fail before writing code | Tests assert behavior once the API shape is known |
-| One micro-cycle per behavior | OpenSpec tasks: feature work, then a dedicated tests section |
+**Iron law:** no production code without a failing test first. If code was written before its test, delete the code and implement again from the test.
 
-## What is required
+## Scope
 
-1. **Harness gate** — run `make -f Makefile.harness check` (or `ci`) before claiming a change is done.
-2. **Unit tests (no GPU)** — pure Python modules that agents and CI can run on every machine:
-   - `json_sanitize.py` → `tests/test_json_sanitize.py`
-   - `bridge/openai_compat.py` and bridge routing → `tests/test_openai_stt.py`
-   - k8s bridge image invariant → `tests/test_bridge_k8s.py`
-3. **Mocks, not Cog** — bridge tests mock Cog HTTP responses; they never start WhisperX or need CUDA.
-4. **Same commit / PR** — new bridge or sanitize behavior ships with matching tests; do not defer tests to a follow-up PR unless explicitly scoped in OpenSpec non-goals.
+| Layer | TDD |
+|-------|-----|
+| `json_sanitize.py` | Strict TDD — `tests/test_json_sanitize.py` |
+| `bridge/openai_compat.py`, `bridge/bridge.py` | Strict TDD — mock Cog, no GPU — `tests/test_openai_stt.py` |
+| `scripts/bridge_k8s.py`, k8s invariants | Strict TDD — `tests/test_bridge_k8s.py` |
+| `predict.py` (WhisperX / torch / GPU) | Extract pure helpers where possible and TDD them; GPU pipeline verified by manual smoke or scoped GPU CI — see [PLANS.md](../PLANS.md) |
 
-## What is out of scope (for now)
+## Harness gate
 
-| Area | Policy |
-|------|--------|
-| `predict.py` (WhisperX / torch / GPU) | No unit tests in default harness; manual or GPU CI (`workflow_dispatch`) only — see [PLANS.md](../PLANS.md) |
-| End-to-end audio quality | Manual smoke against a running stack, not CI |
-| pytest | Use stdlib `unittest` via `make check` |
+Run `make -f Makefile.harness check` (or `ci`) after every RED/GREEN cycle and before claiming done.
 
-## OpenSpec task ordering
+- stdlib `unittest` only (no pytest)
+- bridge tests inject `urlopen_fn`; never start Cog or WhisperX in unit tests
 
-When authoring `tasks.md` for a change:
+## OpenSpec
 
-1. Document decisions in `design.md` / delta specs first.
-2. Group **implementation** tasks (modules, routes, converters).
-3. Group **tests** in a dedicated section (e.g. `## N. Tests`) covering happy paths, validation errors, and HTTP boundaries with mocked Cog.
-4. Close with harness: `make -f Makefile.harness check`.
+Agent rules live **only** in [`openspec/config.yaml`](../openspec/config.yaml). Per-change `.openspec.yaml` is metadata (`schema`, `created`) only.
 
-Do **not** reorder tasks to enforce test-first TDD; do **not** omit the tests section.
+When authoring `tasks.md`:
 
-## Adding tests
-
-- Place files under `tests/test_*.py`; discovered by `unittest discover`.
-- Prefer testing pure functions and `handle_*` orchestrators with injected `urlopen_fn` (see `tests/test_openai_stt.py`).
-- Keep fixtures (`MOCK_COG_OUTPUT`, etc.) beside tests or in the module under test when shared.
+1. Document decisions in `design.md` / delta specs.
+2. For **each behavior**, order tasks **test first → implementation → refactor** (RED → GREEN → REFACTOR).
+3. Group by feature slice, not “all impl then all tests”.
+4. Close with `make -f Makefile.harness check`.
 
 ## Related
 
 - [AGENTS.md](../AGENTS.md) — harness commands
 - [DATA_CONTRACTS.md](./DATA_CONTRACTS.md) — shapes asserted in tests
 - [OBSERVABILITY.md](./OBSERVABILITY.md) — smoke vs check vs audit
-- [openspec/config.yaml](../openspec/config.yaml) — agent rules for OpenSpec artifacts
+- [openspec/config.yaml](../openspec/config.yaml) — OpenSpec TDD rules for agents
