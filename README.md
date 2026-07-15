@@ -13,6 +13,7 @@ This repo is the codebase behind the following Replicate models, which we use at
 - [Self-hosted deployment](#self-hosted-deployment)
   - [Architecture](#architecture)
   - [Using the API](#using-the-api)
+  - [OpenAI-compatible endpoint](#openai-compatible-endpoint)
   - [Health checks](#health-checks)
   - [Prediction response format](#prediction-response-format)
   - [Bridge script maintenance](#bridge-script-maintenance)
@@ -39,6 +40,7 @@ For implementation details, see the [WhisperX GitHub repo](https://github.com/m-
 | `predict.py` | Cog `Predictor` — transcribe, align, diarize pipeline |
 | `cog.yaml` | Cog build and runtime configuration |
 | `bridge/bridge.py` | **Source of truth** for the Replicate-compatible HTTP bridge (see [Bridge script maintenance](#bridge-script-maintenance)) |
+| `bridge/openai_compat.py` | OpenAI STT endpoint handler (`POST /v1/audio/transcriptions`) |
 | `bridge/README.md` | Short pointer for bridge maintainers |
 | `k8s/whisperx-stack.yaml` | Kubernetes manifest (Cog + Redis + bridge); embeds `bridge.py` in a ConfigMap |
 | `docker-compose.yml` | Docker Compose stack equivalent to the k8s pod |
@@ -100,6 +102,60 @@ Clients ──► :8080 bridge ──► proxy ──► :5000 Cog (whisperx)
 - **Readiness:** `GET /health-check` (no auth) — proxied to Cog; see [Health checks](#health-checks).
 
 Async predictions (`Prefer: respond-async`) return `202 Accepted`; status updates are delivered via webhooks only (Cog does not support polling). The bridge injects an internal webhook when none is provided so results can be fetched with `GET /predictions/<id>`.
+
+### OpenAI-compatible endpoint
+
+The bridge also exposes an **OpenAI Whisper-compatible** speech-to-text endpoint for clients such as the [openai-python](https://github.com/openai/openai-python) SDK and Hermes Agent.
+
+| Item | Value |
+|------|-------|
+| Endpoint | `POST /v1/audio/transcriptions` |
+| Auth | `Authorization: Bearer <BRIDGE_TOKEN>` (same token as Replicate API) |
+| Request | `multipart/form-data` with field `file` (binary audio) |
+| Response | **Synchronous** — single HTTP response, no polling or webhooks |
+| Default response | JSON `{"text": "..."}` |
+
+**Example (curl):**
+
+```bash
+curl -sS http://localhost:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $BRIDGE_TOKEN" \
+  -F file=@sample.ogg \
+  -F model=whisper-1 \
+  -F language=fr
+```
+
+**Supported `response_format` values:** `json` (default), `text`, `verbose_json`, `srt`, `vtt`.
+
+**Model mapping** (OpenAI name → Cog `whisper_model`):
+
+| Client `model` | Cog `whisper_model` |
+|----------------|---------------------|
+| `whisper-1` | `large-v3-turbo` |
+| `large-v3` | `large-v3` |
+| `large-v3-turbo` | `large-v3-turbo` |
+| `tiny` | `tiny` |
+
+**Supported audio extensions** (OpenAI official allowlist): `flac`, `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `ogg`, `wav`, `webm`.
+
+**Environment variables** (bridge container):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OPENAI_STT_TIMEOUT_SECONDS` | `300` | Max wait for sync Cog transcription → HTTP 504 |
+| `OPENAI_STT_MAX_FILE_SIZE_MB` | `25` | Max upload size → HTTP 413 |
+
+**openai-python example:**
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key=os.environ["BRIDGE_TOKEN"])
+result = client.audio.transcriptions.create(model="whisper-1", file=open("sample.ogg", "rb"))
+print(result.text)
+```
+
+Audio is passed to Cog as a base64 **data URI** in JSON (`input.audio_file`); see [docs/BRIDGE.md](./docs/BRIDGE.md).
 
 ### Health checks
 
@@ -191,28 +247,23 @@ References: [Cog HTTP API](https://cog.run/http/), [Replicate HTTP API](https://
 
 ### Bridge script maintenance
 
-The bridge is implemented in **`bridge/bridge.py`**. This file is the **source of truth**.
+The bridge is implemented in **`bridge/bridge.py`** (routing, auth, Replicate API) and **`bridge/openai_compat.py`** (OpenAI STT). These files are the **source of truth**.
 
-It is consumed in two places:
+They are consumed in two places:
 
-| Consumer | How `bridge.py` is loaded |
-|----------|---------------------------|
-| **Docker Compose** | Bind-mount `./bridge/bridge.py` → `/scripts/bridge.py` |
-| **Kubernetes** | Embedded inline in ConfigMap `cog-bridge-script`, key `bridge.py`, in `k8s/whisperx-stack.yaml` |
-
-**Keep both copies in sync.** Edit `bridge/bridge.py` first, then update the Kubernetes ConfigMap block. Do not change only the ConfigMap or only the standalone file.
-
-To refresh the ConfigMap after editing `bridge/bridge.py`:
+| Consumer | How bridge scripts are loaded |
+|----------|-------------------------------|
+| Docker Compose | Bind-mount `./bridge/bridge.py` and `./bridge/openai_compat.py` |
+| Kubernetes | ConfigMap `cog-bridge-script` in `k8s/whisperx-stack.yaml` |
 
 ```bash
-python3 scripts/sync-bridge-to-k8s.py
+python3 scripts/sync-bridge-to-k8s.py   # after editing bridge/*.py
+python3 scripts/check-bridge-sync.py    # before commit (also: make smoke)
 ```
 
-To verify both copies match:
+Previously this section referred only to `bridge.py`; both files must stay in sync with the ConfigMap.
 
-```bash
-python3 scripts/check-bridge-sync.py
-```
+**Keep both copies in sync.** Edit `bridge/*.py` first, then run the sync script. Do not change only the ConfigMap or only the standalone files.
 
 See [AGENTS.md](./AGENTS.md) for bridge logging prefixes, webhook error codes, Redis limits, and other implementation details.
 

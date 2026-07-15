@@ -19,9 +19,12 @@ services:
     command: ["python", "-u", "/scripts/bridge.py"]
     volumes:
       - ./bridge/bridge.py:/scripts/bridge.py:ro
+      - ./bridge/openai_compat.py:/scripts/openai_compat.py:ro
     environment:
       BRIDGE_AUTH_TOKEN: ${BRIDGE_TOKEN}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      OPENAI_STT_TIMEOUT_SECONDS: ${OPENAI_STT_TIMEOUT_SECONDS:-300}
+      OPENAI_STT_MAX_FILE_SIZE_MB: ${OPENAI_STT_MAX_FILE_SIZE_MB:-25}
     ports:
       - "${BRIDGE_PORT:-8080}:8080"
       - "${COG_PORT:-5000}:5000"

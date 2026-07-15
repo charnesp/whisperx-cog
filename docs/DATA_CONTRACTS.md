@@ -33,3 +33,27 @@ All floats in `output` must pass **`sanitize_for_json()`** before return (no NaN
 **Invariant:** Any value crossing the Cog HTTP / webhook boundary is processed by `json_sanitize.sanitize_for_json`. Do not return raw WhisperX tensors or un-sanitized floats from `predict()`.
 
 Unit tests: `tests/test_json_sanitize.py`
+
+## OpenAI STT responses (`POST /v1/audio/transcriptions`)
+
+Bridge boundary only — not Cog/Replicate prediction objects.
+
+### Error envelope (4xx / 5xx)
+
+```json
+{"error": {"message": "...", "type": "invalid_request_error|authentication_error|server_error", "code": null}}
+```
+
+### Success by `response_format`
+
+| `response_format` | Content-Type | Body |
+|-------------------|--------------|------|
+| `json` (default) | `application/json` | `{"text": "..."}` |
+| `text` | `text/plain; charset=utf-8` | plain transcribed text |
+| `verbose_json` | `application/json` | OpenAI `TranscriptionVerbose` — top-level `words[]` and/or `segments[]` per `timestamp_granularities` |
+| `srt` | `text/plain; charset=utf-8` | SRT subtitles |
+| `vtt` | `text/vtt; charset=utf-8` | WebVTT |
+
+`verbose_json` maps Cog `output.segments[]` to OpenAI segment fields; missing Whisper metrics use placeholders (`tokens: []`, `seek: 0`, `avg_logprob: 0.0`, etc.).
+
+Unit tests: `tests/test_openai_stt.py`

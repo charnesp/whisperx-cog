@@ -1,6 +1,6 @@
 # Bridge
 
-HTTP bridge for Replicate-compatible self-hosted deployment. Source of truth: **`bridge/bridge.py`**.
+HTTP bridge for Replicate-compatible self-hosted deployment. Source of truth: **`bridge/bridge.py`** and **`bridge/openai_compat.py`**.
 
 Full API usage: [README.md](../README.md). Architecture: [ARCHITECTURE.md](./ARCHITECTURE.md).
 
@@ -8,21 +8,23 @@ Full API usage: [README.md](../README.md). Architecture: [ARCHITECTURE.md](./ARC
 
 | Deployment | How loaded |
 |------------|------------|
-| Docker Compose | Bind-mount `./bridge/bridge.py` |
+| Docker Compose | Bind-mount `./bridge/bridge.py` and `./bridge/openai_compat.py` |
 | Kubernetes | ConfigMap `cog-bridge-script` in `k8s/whisperx-stack.yaml` |
 
 ```bash
-python3 scripts/sync-bridge-to-k8s.py   # after editing bridge/bridge.py
+python3 scripts/sync-bridge-to-k8s.py   # after editing bridge/*.py
 python3 scripts/check-bridge-sync.py    # before commit (also: make smoke)
 ```
 
 ## Environment variables
 
-| Container var | k8s secret | Compose `.env` | Purpose |
-|---------------|------------|----------------|---------|
-| `BRIDGE_AUTH_TOKEN` | `BRIDGE_TOKEN` | `BRIDGE_TOKEN` | `Authorization: Bearer …` |
-| `WEBHOOK_SECRET` | `WEBHOOK_SECRET` | `WEBHOOK_SECRET` | Internal webhook path segment |
-| `HUGGINGFACE_TOKEN` | `HUGGINGFACE_TOKEN` | `HUGGINGFACE_TOKEN` | Passed to whisperx container only |
+| Container var | k8s secret / Compose | Default | Purpose |
+|---------------|----------------------|---------|---------|
+| `BRIDGE_AUTH_TOKEN` | `BRIDGE_TOKEN` | — | `Authorization: Bearer …` |
+| `WEBHOOK_SECRET` | `WEBHOOK_SECRET` | — | Internal webhook path segment |
+| `OPENAI_STT_TIMEOUT_SECONDS` | env / `.env` | `300` | Sync Cog POST read timeout (OpenAI STT) |
+| `OPENAI_STT_MAX_FILE_SIZE_MB` | env / `.env` | `25` | Max upload size (OpenAI STT) |
+| `HUGGINGFACE_TOKEN` | `HUGGINGFACE_TOKEN` | — | Passed to whisperx container only |
 
 Loopback addresses (`127.0.0.1:6379`, `127.0.0.1:5000`, `localhost:8080` webhook) are fixed because Cog, Redis, and bridge share one network namespace.
 
@@ -65,6 +67,21 @@ Loopback addresses (`127.0.0.1:6379`, `127.0.0.1:5000`, `localhost:8080` webhook
 
 - No client `webhook` → inject internal webhook + `webhook_events_filter: ["start", "completed"]`, store in Redis
 - Client provides webhook → forward unchanged, **no Redis storage**
+
+## POST /v1/audio/transcriptions (OpenAI STT)
+
+OpenAI-compatible speech-to-text endpoint. Implemented in `bridge/openai_compat.py`, routed from `bridge/bridge.py`.
+
+| Aspect | Behavior |
+|--------|----------|
+| Protocol | OpenAI `multipart/form-data` (`file`, `model`, optional `language`, `response_format`, …) |
+| Semantics | **Synchronous** — blocks until Cog `predict()` completes |
+| Cog call | Single `POST /predictions` JSON, **no** `Prefer: respond-async`, **no** poll, **no** Redis |
+| Audio handoff | Base64 **data URI** in `input.audio_file` (Cog HTTP API contract — not bare paths, not multipart to Cog) |
+| Auth errors | HTTP 401 with OpenAI error shape (`invalid api key` / `authentication_error`) |
+| Logging | `[bridge ext]` — path, bytes, model, format, status, duration (no payload logging) |
+
+Fixed Cog input on this path: `align_output: true`, `diarization: false`, plus mapped `whisper_model`.
 
 ## Probes
 

@@ -1,6 +1,7 @@
 import json
 import re
 import socket
+import time
 import urllib.request
 import urllib.error
 import uuid
@@ -8,6 +9,8 @@ import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
+
+import openai_compat
 
 REDIS_HOST, REDIS_PORT = '127.0.0.1', 6379
 COG_URL = "http://127.0.0.1:5000"
@@ -262,10 +265,56 @@ class ReplicateCompatibleBridge(BaseHTTPRequestHandler):
         bridge_log_int(f"GET cog upstream proxy prediction_id={pred_id!r}")
         self.proxy_request("GET")
 
+    def _send_openai_response(self, status, headers_dict, body):
+        self.send_response(status)
+        for key, value in headers_dict.items():
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_openai_transcription(self):
+        client = self.client_address[0]
+        edge = self._log_edge()
+        started = time.time()
+        auth_header = self.headers.get("Authorization")
+        if auth_header != f"Bearer {AUTH_TOKEN}":
+            edge(f"POST openai-stt denied unauthorized client={client}")
+            status, payload = openai_compat.auth_error_response()
+            self._send_json(status, payload)
+            return
+
+        cl = self._parse_content_length()
+        if cl is None:
+            status, payload = openai_compat.openai_error(
+                "Content-Length must be a non-negative integer",
+                "invalid_request_error",
+                400,
+            )
+            self._send_json(status, payload)
+            return
+
+        status, resp_headers, body, meta = openai_compat.handle_transcription_request(
+            self.headers,
+            self.rfile,
+            cl,
+        )
+        duration = time.time() - started
+        edge(
+            f"POST openai-stt path=/v1/audio/transcriptions client={client} "
+            f"bytes={meta.get('bytes', 0)} model={meta.get('model')!r} "
+            f"format={meta.get('response_format')!r} status={status} "
+            f"duration_s={duration:.3f}"
+        )
+        self._send_openai_response(status, resp_headers, body)
+
     def do_POST(self):
         client = self.client_address[0]
         edge = self._log_edge()
         edge(f"POST path={self.path!r} client={client}")
+        if self.path == "/v1/audio/transcriptions":
+            self.handle_openai_transcription()
+            return
         if not self.is_authorized():
             edge(f"POST denied unauthorized path={self.path!r} client={client}")
             self.send_error(401, "Unauthorized"); return
