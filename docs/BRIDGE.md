@@ -9,11 +9,11 @@ Full API usage: [README.md](../README.md). Architecture: [ARCHITECTURE.md](./ARC
 | Deployment | How loaded |
 |------------|------------|
 | Docker Compose | `ghcr.io/charnesp/whisperx-cog-bridge:latest` (GHCR) |
-| Kubernetes | ConfigMap `cog-bridge-script` in `k8s/whisperx-stack.yaml` |
+| Kubernetes | same GHCR image in `k8s/whisperx-stack.yaml` |
 
 ```bash
-python3 scripts/sync-bridge-to-k8s.py   # after editing bridge/*.py
 python3 scripts/check-bridge-sync.py    # before commit (also: make smoke)
+# after editing bridge/*.py: push to main → GHCR rebuild → kubectl rollout restart
 ```
 
 ## Environment variables

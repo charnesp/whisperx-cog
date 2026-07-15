@@ -99,7 +99,7 @@ def check_bridge_sync() -> list[str]:
         text=True,
     )
     if result.returncode == 0:
-        ok("bridge/bridge.py matches k8s ConfigMap")
+        ok("k8s manifest uses published bridge GHCR image")
     else:
         fail("bridge sync check failed")
         errors.append("bridge-sync")

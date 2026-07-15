@@ -43,7 +43,7 @@ For implementation details, see the [WhisperX GitHub repo](https://github.com/m-
 | `bridge/openai_compat.py` | OpenAI STT endpoint handler (`POST /v1/audio/transcriptions`) |
 | `bridge/Dockerfile` | Bridge container image (published as `ghcr.io/charnesp/whisperx-cog-bridge`) |
 | `bridge/README.md` | Short pointer for bridge maintainers |
-| `k8s/whisperx-stack.yaml` | Kubernetes manifest (Cog + Redis + bridge); embeds `bridge.py` in a ConfigMap |
+| `k8s/whisperx-stack.yaml` | Kubernetes manifest (Cog + Redis + bridge GHCR image) |
 | `docker-compose.yml` | Docker Compose stack equivalent to the k8s pod |
 | `.env.example` | Environment template for Docker Compose secrets |
 | `AGENTS.md` | Agent entry map → `docs/` for depth |
@@ -253,21 +253,19 @@ References: [Cog HTTP API](https://cog.run/http/), [Replicate HTTP API](https://
 
 The bridge is implemented in **`bridge/bridge.py`** (routing, auth, Replicate API) and **`bridge/openai_compat.py`** (OpenAI STT). These files are the **source of truth**.
 
-They are consumed in two places:
+They are packaged into one GHCR image consumed by Docker Compose and Kubernetes:
 
 | Consumer | How bridge scripts are loaded |
 |----------|-------------------------------|
 | Docker Compose | `ghcr.io/charnesp/whisperx-cog-bridge:latest` (GHCR, built by GitHub Actions) |
-| Kubernetes | ConfigMap `cog-bridge-script` in `k8s/whisperx-stack.yaml` |
+| Kubernetes | same image in `k8s/whisperx-stack.yaml` |
 
 ```bash
-python3 scripts/sync-bridge-to-k8s.py   # after editing bridge/*.py
 python3 scripts/check-bridge-sync.py    # before commit (also: make smoke)
+# after editing bridge/*.py: push to main → GHCR rebuild → kubectl rollout restart
 ```
 
-Previously this section referred only to `bridge.py`; both files must stay in sync with the ConfigMap.
-
-**Keep both copies in sync.** Edit `bridge/*.py` first, then run the sync script. Do not change only the ConfigMap or only the standalone files.
+Edit `bridge/*.py` first; the image is rebuilt on push to `main` (see `.github/workflows/bridge-docker-publish.yml`).
 
 See [AGENTS.md](./AGENTS.md) for bridge logging prefixes, webhook error codes, Redis limits, and other implementation details.
 
@@ -354,7 +352,7 @@ make -f Makefile.harness smoke   # fast checks
 make -f Makefile.harness ci        # full gate (CI)
 ```
 
-When changing bridge behavior: edit `bridge/bridge.py` → `python3 scripts/sync-bridge-to-k8s.py` → `make -f Makefile.harness smoke`.
+When changing bridge behavior: edit `bridge/*.py` → push to rebuild GHCR image → `make -f Makefile.harness smoke`.
 
 ## Citation
 

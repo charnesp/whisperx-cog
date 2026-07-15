@@ -13,7 +13,7 @@ make -f Makefile.harness ci        # full gate (same as CI)
 make -f Makefile.harness audit     # docs / entropy audit
 ```
 
-After editing **`bridge/bridge.py`**: `python3 scripts/sync-bridge-to-k8s.py` then `make smoke`.
+After editing **`bridge/*.py`**: push to rebuild `ghcr.io/charnesp/whisperx-cog-bridge:latest`, then `make smoke`.
 
 ## Documentation map
 
@@ -32,9 +32,9 @@ After editing **`bridge/bridge.py`**: `python3 scripts/sync-bridge-to-k8s.py` th
 | `predict.py` | Cog Predictor — transcribe / align / diarize |
 | `json_sanitize.py` | JSON-safe output (NaN/inf); **unit-tested, no torch** |
 | `bridge/bridge.py` | Bridge source of truth (see dual-copy rule in docs/BRIDGE.md) |
-| `k8s/whisperx-stack.yaml` | Kubernetes stack (embeds bridge ConfigMap) |
+| `k8s/whisperx-stack.yaml` | Kubernetes stack (Cog + Redis + bridge GHCR image) |
 | `docker-compose.yml` | Compose stack (mounts bridge.py) |
-| `scripts/check-bridge-sync.py` | Verify bridge ↔ k8s sync |
+| `scripts/check-bridge-sync.py` | Verify k8s uses bridge GHCR image |
 | `Makefile.harness` | Deterministic smoke / check / ci |
 
 Image: `ghcr.io/charnesp/whisperx-cog:latest`.
@@ -42,7 +42,7 @@ Image: `ghcr.io/charnesp/whisperx-cog:latest`.
 ## Critical invariants
 
 1. **JSON output** — all prediction floats pass `json_sanitize.sanitize_for_json` before return. NaN causes Cog webhook failure.
-2. **Bridge dual copy** — `bridge/bridge.py` must match k8s ConfigMap; run sync + check before commit.
+2. **Bridge image** — k8s and Compose use `ghcr.io/charnesp/whisperx-cog-bridge:latest`; source of truth is `bridge/*.py`; GHCR rebuild on push to `main`.
 3. **cog_runtime disabled** — coglet rejects dict/list in Output; do not enable without fixing Output types.
 4. **Client webhook** — if client sends own `webhook`, bridge does not store in Redis; `GET /predictions/<id>` won't work.
 

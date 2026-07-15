@@ -22,7 +22,7 @@ System map for whisperx-cog. User-facing setup lives in [README.md](../README.md
 | **Predictor** | `predict.py` | WhisperX pipeline, Cog I/O, GPU health | HTTP serving, Redis, auth |
 | **JSON boundary** | `json_sanitize.py` | NaN/inf sanitization before Cog JSON response | Import torch, cog, whisperx |
 | **Bridge** | `bridge/bridge.py` | Replicate-compatible proxy, webhook→Redis cache | ML inference |
-| **Bridge sync** | `scripts/bridge_k8s.py`, `scripts/*-bridge*.py` | Keep `bridge.py` ↔ k8s ConfigMap aligned | Runtime HTTP |
+| **Bridge sync** | `scripts/bridge_k8s.py`, `scripts/check-bridge-sync.py` | Verify k8s uses bridge GHCR image | Runtime HTTP |
 | **Deploy** | `k8s/`, `docker-compose.yml` | Orchestration, secrets, probes | Application logic |
 | **Build** | `cog.yaml`, `build.sh` | Image build, model pre-download | Request handling |
 
@@ -43,7 +43,7 @@ System map for whisperx-cog. User-facing setup lives in [README.md](../README.md
 
 ## Dual copy invariant
 
-`bridge/bridge.py` (source of truth) must match the ConfigMap in `k8s/whisperx-stack.yaml`. See [docs/BRIDGE.md](./BRIDGE.md) and `make -f Makefile.harness smoke`.
+`bridge/*.py` is packaged into `ghcr.io/charnesp/whisperx-cog-bridge:latest` for Compose and k8s. See [docs/BRIDGE.md](./BRIDGE.md) and `make -f Makefile.harness smoke`.
 
 ## External dependencies
 

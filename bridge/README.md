@@ -7,13 +7,13 @@ Replicate-compatible API proxy for self-hosted Cog + Redis stacks.
 | Deployment | How loaded |
 |------------|------------|
 | Docker Compose | `ghcr.io/charnesp/whisperx-cog-bridge:latest` — built from `bridge/Dockerfile` via GitHub Actions |
-| Kubernetes | ConfigMap `cog-bridge-script` in `k8s/whisperx-stack.yaml` |
+| Kubernetes | same GHCR image in `k8s/whisperx-stack.yaml` |
 
 After editing here:
 
 ```bash
-python3 scripts/sync-bridge-to-k8s.py    # update k8s ConfigMap
-python3 scripts/check-bridge-sync.py     # verify both copies match
+python3 scripts/check-bridge-sync.py     # verify k8s references GHCR image
+# after edits: push to main → GHCR rebuild → kubectl rollout restart
 make -f Makefile.harness smoke           # full pre-commit gate (includes sync check)
 ```
 

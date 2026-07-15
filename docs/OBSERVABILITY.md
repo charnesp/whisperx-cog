@@ -65,7 +65,7 @@ No Prometheus/OpenTelemetry in this repo today. Operational signals:
 1. **`GET /health-check` → UNHEALTHY** — GPU missing or CUDA broken; check `nvidia-smi` in whisperx container.
 2. **`GET /predictions/<id>` empty after success** — client supplied own webhook; use webhook URL or omit it for Redis cache.
 3. **Webhook 503 `redis_set_failed`** — Redis down or payload too large; check bridge `[bridge int]` logs.
-4. **Bridge / k8s drift** — run `python3 scripts/check-bridge-sync.py`.
+4. **Bridge / k8s drift** — run `python3 scripts/check-bridge-sync.py` (k8s must reference the GHCR bridge image).
 
 ## Harness verification (no GPU)
 

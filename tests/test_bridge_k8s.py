@@ -1,26 +1,33 @@
-"""Unit tests for bridge ↔ k8s ConfigMap sync helpers."""
+"""Unit tests for bridge ↔ k8s deployment checks."""
 
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from bridge_k8s import embed_bridge_in_k8s, extract_configmap_bridge, read_standalone_bridge, K8S
+from bridge_k8s import (
+    BRIDGE_IMAGE,
+    K8S,
+    bridge_container_image,
+    bridge_source_files_present,
+    k8s_uses_bridge_configmap,
+)
 
 
-class TestBridgeK8sRoundtrip(unittest.TestCase):
-    def test_extract_matches_standalone(self):
-        standalone = read_standalone_bridge()
-        embedded = extract_configmap_bridge(K8S.read_text())
-        self.assertIsNotNone(embedded)
-        self.assertEqual(standalone, embedded)
+class TestBridgeK8sDeployment(unittest.TestCase):
+    def test_manifest_exists(self):
+        self.assertTrue(K8S.is_file())
 
-    def test_embed_roundtrip(self):
-        bridge = read_standalone_bridge()
+    def test_uses_ghcr_bridge_image(self):
         k8s = K8S.read_text()
-        updated = embed_bridge_in_k8s(bridge, k8s)
-        self.assertIsNotNone(updated)
-        self.assertEqual(extract_configmap_bridge(updated), bridge)
+        self.assertEqual(bridge_container_image(k8s), BRIDGE_IMAGE)
+
+    def test_no_configmap_embed(self):
+        k8s = K8S.read_text()
+        self.assertFalse(k8s_uses_bridge_configmap(k8s))
+
+    def test_bridge_source_files_present(self):
+        self.assertEqual(bridge_source_files_present(), [])
 
 
 if __name__ == "__main__":
