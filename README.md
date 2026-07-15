@@ -2,84 +2,130 @@
 
 This repo is the codebase behind the following Replicate models, which we use at [Upmeet](https://upmeet.ai):
 
-- [victor-upmeet/whisperx](https://replicate.com/victor-upmeet/whisperx) : if you don't know which model to use, use this one. It uses a low-cost hardware, which suits most cases
-- [victor-upmeet/whisperx-a40-large](https://replicate.com/victor-upmeet/whisperx-a40-large) : if you encounter some memory issues with previous models, consider this one. It can happen when dealing with long audio files and performing alignment and/or diarization
-- [victor-upmeet/whisperx-a100-80gb](https://replicate.com/victor-upmeet/whisperx-a100-80gb) : if you encounter some memory issues with previous models, consider this one. It can happen when dealing with long audio files and performing alignment and/or diarization
+- [victor-upmeet/whisperx](https://replicate.com/victor-upmeet/whisperx) — default choice; low-cost hardware, suits most cases
+- [victor-upmeet/whisperx-a40-large](https://replicate.com/victor-upmeet/whisperx-a40-large) — for memory issues on long audio with alignment/diarization
+- [victor-upmeet/whisperx-a100-80gb](https://replicate.com/victor-upmeet/whisperx-a100-80gb) — same use case, larger GPU
 
-# Model Information
+## Contents
 
-WhisperX provides fast automatic speech recognition (70x realtime with large-v3) with word-level timestamps and speaker diarization.
+- [Model information](#model-information)
+- [Repository layout](#repository-layout)
+- [Self-hosted deployment](#self-hosted-deployment)
+  - [Architecture](#architecture)
+  - [Using the API](#using-the-api)
+  - [Health checks](#health-checks)
+  - [Prediction response format](#prediction-response-format)
+  - [Bridge script maintenance](#bridge-script-maintenance)
+  - [Kubernetes](#kubernetes)
+  - [Docker Compose](#docker-compose)
+- [Building the Cog image](#building-the-cog-image)
+- [Maintainer notes](#maintainer-notes)
+- [Citation](#citation)
 
-Whisper is an ASR model developed by OpenAI, trained on a large dataset of diverse audio. Whilst it does produces highly accurate transcriptions, the corresponding timestamps are at the utterance-level, not per word, and can be inaccurate by several seconds. OpenAI’s whisper does not natively support batching, but WhisperX does.
+## Model information
 
-Model used is for transcription is large-v3 from faster-whisper.
+WhisperX provides fast automatic speech recognition (70× realtime with large-v3) with word-level timestamps and speaker diarization.
 
-For more information about WhisperX, including implementation details, see the [WhisperX github repo](https://github.com/m-bain/whisperX).
+Whisper is an ASR model developed by OpenAI, trained on a large dataset of diverse audio. Whilst it produces highly accurate transcriptions, the corresponding timestamps are at the utterance level, not per word, and can be inaccurate by several seconds. OpenAI’s Whisper does not natively support batching, but WhisperX does.
 
-# Kubernetes deployment (Replicate-compatible API)
+The transcription model is **large-v3** from [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
 
-You can run this model on your own Kubernetes cluster with a **Replicate-compatible API** and **webhook-based result storage**. The stack emulates Replicate’s prediction lifecycle: create a prediction, get webhooks for `start` and `completed`, and poll or retrieve the result by ID.
+For implementation details, see the [WhisperX GitHub repo](https://github.com/m-bain/whisperX).
 
-## Architecture
+## Repository layout
 
-The `k8s/whisperx-stack.yaml` manifest deploys a single pod with three containers:
+| Path | Role |
+|------|------|
+| `predict.py` | Cog `Predictor` — transcribe, align, diarize pipeline |
+| `cog.yaml` | Cog build and runtime configuration |
+| `bridge/bridge.py` | **Source of truth** for the Replicate-compatible HTTP bridge (see [Bridge script maintenance](#bridge-script-maintenance)) |
+| `bridge/README.md` | Short pointer for bridge maintainers |
+| `k8s/whisperx-stack.yaml` | Kubernetes manifest (Cog + Redis + bridge); embeds `bridge.py` in a ConfigMap |
+| `docker-compose.yml` | Docker Compose stack equivalent to the k8s pod |
+| `.env.example` | Environment template for Docker Compose secrets |
+| `AGENTS.md` | Maintainer and AI-agent reference (API gotchas, bridge behavior, conventions) |
 
-1. **whisperx** – Cog server (WhisperX) listening on port 5000.
-2. **redis** – In-memory store for webhook payloads (prediction status and output).
-3. **bridge** – HTTP server on port 8080 that:
-   - Proxies requests to the Cog server.
-   - For `POST /predictions`: if the body does not already include `webhook` and `webhook_events_filter`, injects an internal webhook so Cog sends status updates (start, completed) to the bridge; otherwise leaves the payload as-is (classic Replicate behavior when the client provides its own webhook).
-   - Stores webhook payloads in Redis and serves them on `GET /predictions/{id}`.
+Published Docker image: `ghcr.io/charnesp/whisperx-cog:latest` (built from `main` via GitHub Actions).
 
-The **webhook and `WEBHOOK_SECRET` are only for internal communication** (Cog → bridge inside the pod). They are not meant to be called or exposed to the outside. External API access uses **`Authorization: Bearer <BRIDGE_TOKEN>`**. `/health` is unauthenticated.
+## Self-hosted deployment
 
-## Prerequisites
+Run WhisperX on your own infrastructure with a **Replicate-compatible API** and **webhook-based result storage**. The stack emulates Replicate’s prediction lifecycle: create a prediction, receive webhooks for `start` and `completed`, and retrieve the result by ID.
 
-- A Kubernetes cluster with GPU nodes (e.g. `nvidia.com/gpu: 1`).
-- `kubectl` configured for that cluster.
-- Docker image `ghcr.io/charnesp/whisperx-cog:latest` (or update the image in the Deployment to your own registry).
+Two deployment options are provided:
 
-## Setup
+| | Kubernetes | Docker Compose |
+|---|------------|----------------|
+| Manifest | `k8s/whisperx-stack.yaml` | `docker-compose.yml` |
+| Secrets | Kubernetes Secrets in the manifest | `.env` (from `.env.example`) |
+| GPU | `nvidia.com/gpu: 1` per pod | `gpus: all` (NVIDIA Container Toolkit) |
+| Typical use | Production cluster | Local dev / single host |
 
-1. **Edit the secrets** in `k8s/whisperx-stack.yaml` (or replace them with your own secret management):
-   - **bridge-auth-secret**: set `BRIDGE_TOKEN` (for external API auth) and `WEBHOOK_SECRET` (only for the internal Cog→bridge webhook; not exposed externally).
-   - **hf-secret**: set `HUGGINGFACE_TOKEN` to your Hugging Face token (required for WhisperX models).
+Both expose the same ports and API (see below).
 
-2. **Deploy the stack:**
-   ```bash
-   kubectl apply -f k8s/whisperx-stack.yaml
-   ```
+### Architecture
 
-3. **Expose the service** (e.g. via LoadBalancer, Ingress, or port-forward for testing):
-   ```bash
-   kubectl port-forward service/whisperx-service 8080:8080 5000:5000
-   ```
+Each stack runs **three components in one shared network namespace** (Kubernetes pod, or Docker Compose `network_mode: service:bridge`):
 
-## Using the API
+1. **whisperx** — Cog server (WhisperX) on port **5000**
+2. **redis** — In-memory store for webhook payloads (prediction status and output), TTL 24 h
+3. **bridge** — HTTP server on port **8080** that:
+   - Proxies client requests to Cog
+   - On `POST /predictions`: if the body has no `webhook`, injects an internal webhook URL so Cog sends `start` and `completed` events to the bridge; if the client already provides a webhook, forwards the payload unchanged
+   - Stores webhook payloads in Redis and serves them on `GET /predictions/<id>`
 
-- **Replicate-compatible endpoint:** `http://<host>:8080`
-- **Create a prediction:** `POST /predictions` with a JSON body (e.g. `input` with `audio` URL and options). Use header `Authorization: Bearer <BRIDGE_TOKEN>`.
-- **Get result:** `GET /predictions/<id>` with the same Bearer token. Returns the stored prediction payload (e.g. status and output once the webhook has fired).
-- **Health check:** `GET /health` (no auth). Lightweight liveness only (bridge is up). For readiness of the model, use Cog’s `GET /health-check` (see below).
+```
+Clients ──► :8080 bridge ──► proxy ──► :5000 Cog (whisperx)
+                ▲                           │
+                │         webhook (internal)│
+                └─────── Redis ◄────────────┘
+```
+
+**Authentication:**
+
+- External API: `Authorization: Bearer <BRIDGE_TOKEN>` (k8s secret `BRIDGE_TOKEN`; Compose env `BRIDGE_TOKEN` → container `BRIDGE_AUTH_TOKEN`)
+- Internal Cog→bridge webhook: path segment `/<WEBHOOK_SECRET>/webhook?id=<prediction_id>` — not for external use
+- `GET /health` and `GET /health-check`: no auth
+
+**Important:** If the client supplies its own `webhook`, the bridge does **not** store the prediction in Redis, so `GET /predictions/<id>` will not return status or output — use the client webhook instead.
+
+### Using the API
+
+- **Endpoint:** `http://<host>:8080`
+- **Create a prediction:** `POST /predictions` with JSON body (e.g. `input` with `audio` URL and options). Header: `Authorization: Bearer <BRIDGE_TOKEN>`.
+- **Get result:** `GET /predictions/<id>` with the same Bearer token. Returns the cached prediction JSON once the webhook has fired (or proxies to Cog on cache miss).
+- **Liveness:** `GET /health` (no auth) — bridge process only.
+- **Readiness:** `GET /health-check` (no auth) — proxied to Cog; see [Health checks](#health-checks).
+
+Async predictions (`Prefer: respond-async`) return `202 Accepted`; status updates are delivered via webhooks only (Cog does not support polling). The bridge injects an internal webhook when none is provided so results can be fetched with `GET /predictions/<id>`.
 
 ### Health checks
 
-- **Bridge — liveness:** `GET /health` on port 8080 (no auth). Returns 200 if the bridge is up. Used by Kubernetes `livenessProbe` in this stack.
-- **Cog — readiness:** The Cog server (port 5000) exposes **`GET /health-check`**. It always returns HTTP 200; check the JSON body:
-  - **`status`**: `READY` (accepting predictions), `STARTING` (setup running), `BUSY`, `SETUP_FAILED`, `DEFUNCT`, or `UNHEALTHY`.
-  - **`user_healthcheck_error`**: Set when the predictor’s `healthcheck()` returns `False` (optional method).
-- **Predictor:** This model implements **`healthcheck()`** and returns `True` only if CUDA is available, so Cog reports `UNHEALTHY` when the GPU is missing or broken.
+| Check | Path | Port | Auth | Meaning |
+|-------|------|------|------|---------|
+| Bridge liveness | `GET /health` | 8080 | No | Bridge HTTP server is up |
+| Cog readiness | `GET /health-check` | 8080 (proxied to 5000) | No | Model server status in JSON body |
 
-The bridge proxies **`GET /health-check`** to Cog (no auth). The Kubernetes deployment uses it as **readinessProbe**, so the pod is marked ready only when Cog responds successfully.
+Cog’s `GET /health-check` always returns HTTP 200. Inspect JSON **`status`**:
 
-### Prediction response format (Cog / Replicate API)
+- `READY` — accepting predictions
+- `STARTING` — setup in progress
+- `BUSY` — prediction running
+- `SETUP_FAILED`, `DEFUNCT`, `UNHEALTHY` — not ready
 
-The prediction object in the response (or sent to the webhook on `completed`) has this shape:
+This predictor implements **`healthcheck()`** and returns `True` only when CUDA is available, so Cog reports `UNHEALTHY` if the GPU is missing or broken.
 
-- **`status`**: `"succeeded"`, `"failed"`, or `"canceled"` (and `"starting"` / `"processing"` while running).
-- **`output`**: The return value of `predict()` when `status` is `"succeeded"`. Omitted or `null` when the prediction failed or was canceled.
-- **`error`**: Present when `status` is `"failed"`. Contains the error message (string) describing why the prediction failed.
-- **`metrics`**: Optional object (e.g. `predict_time` in seconds). May be present even when the prediction failed.
+Kubernetes uses bridge `GET /health` for **livenessProbe** and `GET /health-check` for **readinessProbe**. Docker Compose healthchecks bridge liveness only (`GET /health` on the bridge container).
+
+### Prediction response format
+
+The prediction object (API response or webhook payload on `completed`) includes:
+
+| Field | Description |
+|-------|-------------|
+| `status` | `"succeeded"`, `"failed"`, `"canceled"`, or while running `"starting"` / `"processing"` |
+| `output` | Return value of `predict()` when succeeded; omitted or `null` on failure |
+| `error` | Present when `status === "failed"` — error message string |
+| `metrics` | Optional (e.g. `predict_time` in seconds) |
 
 **Example — failed prediction:**
 
@@ -110,15 +156,14 @@ The prediction object in the response (or sent to the webhook on `completed`) ha
             "end": 0.642,
             "score": 0.796,
             "speaker": "SPEAKER_00"
-          },
-          { "word": "glow", "start": 0.682, "end": 0.987, "score": 0.85, "speaker": "SPEAKER_00" }
+          }
         ],
         "speaker": "SPEAKER_00"
       }
     ],
     "detected_language": "en",
     "speaker_embeddings": {
-      "SPEAKER_00": [-0.09, 0.04, -0.08, ...]
+      "SPEAKER_00": [-0.09, 0.04, -0.08]
     }
   },
   "metrics": { "predict_time": 5.2 }
@@ -129,27 +174,128 @@ The prediction object in the response (or sent to the webhook on `completed`) ha
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `segments` | array | List of segments (utterances). |
-| `segments[].start` / `end` | number | Segment timestamps in seconds. |
-| `segments[].text` | string | Transcribed text for the segment. |
-| `segments[].words` | array | Word-level timing (present if alignment was run). |
-| `segments[].words[].word` | string | Token text. |
-| `segments[].words[].start` / `end` | number | Word timestamps in seconds. |
-| `segments[].words[].score` | number | Alignment confidence (0–1). |
-| `segments[].words[].speaker` | string | Speaker id (e.g. `SPEAKER_00`) if diarization was run. |
-| `segments[].speaker` | string | Speaker id for the whole segment (if diarization was run). |
-| `detected_language` | string | ISO language code (e.g. `"en"`). |
-| `speaker_embeddings` | object \| null | Map `speaker_id` → vector of floats (embedding). `null` if diarization was not run. |
+| `segments` | array | Utterance list |
+| `segments[].start` / `end` | number | Timestamps in seconds |
+| `segments[].text` | string | Transcribed text |
+| `segments[].words` | array | Word-level timing (if alignment enabled) |
+| `segments[].words[].score` | number | Alignment confidence 0–1 |
+| `segments[].words[].speaker` | string | Speaker id if diarization enabled |
+| `segments[].speaker` | string | Segment speaker if diarization enabled |
+| `detected_language` | string | ISO code (e.g. `"en"`) |
+| `speaker_embeddings` | object \| null | `speaker_id` → float vector; `null` without diarization |
 
-References: [Cog HTTP API](https://cog.run/http/) (POST /predictions response), [Replicate HTTP API](https://replicate.com/docs/reference/http) (Get a prediction).
+References: [Cog HTTP API](https://cog.run/http/), [Replicate HTTP API](https://replicate.com/docs/reference/http).
 
-The bridge only injects `webhook` and `webhook_events_filter: ["start", "completed"]` when the client does not send them; if the client already provides both, the request is forwarded unchanged. When the internal webhook is used, results are stored in Redis and available via `GET /predictions/<id>`. **If you provide your own webhook**, the bridge does not store the prediction in Redis, so **`GET /predictions/<id>` will not return the prediction status or output** — use your webhook URL to receive updates instead.
+### Bridge script maintenance
 
-# Citation
+The bridge is implemented in **`bridge/bridge.py`**. This file is the **source of truth**.
+
+It is consumed in two places:
+
+| Consumer | How `bridge.py` is loaded |
+|----------|---------------------------|
+| **Docker Compose** | Bind-mount `./bridge/bridge.py` → `/scripts/bridge.py` |
+| **Kubernetes** | Embedded inline in ConfigMap `cog-bridge-script`, key `bridge.py`, in `k8s/whisperx-stack.yaml` |
+
+**Keep both copies in sync.** Edit `bridge/bridge.py` first, then update the Kubernetes ConfigMap block. Do not change only the ConfigMap or only the standalone file.
+
+To refresh the ConfigMap after editing `bridge/bridge.py`:
+
+```bash
+python3 scripts/sync-bridge-to-k8s.py
+```
+
+To verify both copies match:
+
+```bash
+python3 scripts/check-bridge-sync.py
+```
+
+See [AGENTS.md](./AGENTS.md) for bridge logging prefixes, webhook error codes, Redis limits, and other implementation details.
+
+### Kubernetes
+
+**Prerequisites:** GPU cluster (`nvidia.com/gpu: 1`), `kubectl`, image `ghcr.io/charnesp/whisperx-cog:latest` (or your registry).
+
+**Setup:**
+
+1. Edit secrets in `k8s/whisperx-stack.yaml`:
+   - **bridge-auth-secret:** `BRIDGE_TOKEN` (external API), `WEBHOOK_SECRET` (internal webhook path)
+   - **hf-secret:** `HUGGINGFACE_TOKEN` (required for diarization models)
+2. Deploy:
+   ```bash
+   kubectl apply -f k8s/whisperx-stack.yaml
+   ```
+3. Expose (LoadBalancer, Ingress, or port-forward):
+   ```bash
+   kubectl port-forward service/whisperx-service 8080:8080 5000:5000
+   ```
+
+**Ports (Service `whisperx-service`):**
+
+| Port | Service |
+|------|---------|
+| 8080 | Replicate-compatible bridge API |
+| 5000 | Cog HTTP API (optional direct access) |
+
+**Logs:** `kubectl logs` on the **bridge** container; lines prefixed `[bridge ext]` (external clients) and `[bridge int]` (Redis, Cog proxy, internal webhook).
+
+### Docker Compose
+
+**Prerequisites:** Docker Compose v2, [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+**Setup:**
+
+1. Copy and edit secrets:
+   ```bash
+   cp .env.example .env
+   # BRIDGE_TOKEN, WEBHOOK_SECRET, HUGGINGFACE_TOKEN
+   ```
+2. Start:
+   ```bash
+   docker compose up -d
+   ```
+3. Check health:
+   ```bash
+   curl http://localhost:8080/health
+   curl -H "Authorization: Bearer $BRIDGE_TOKEN" http://localhost:8080/health-check
+   ```
+
+**Ports** (defaults from `.env.example`):
+
+| Port | Service |
+|------|---------|
+| 8080 | Replicate-compatible bridge API |
+| 5000 | Cog HTTP API (optional direct access) |
+
+**Logs:** `docker compose logs bridge` — same `[bridge ext]` / `[bridge int]` prefixes as Kubernetes.
+
+Resource limits match the k8s Deployment: 12 GiB RAM, 4 CPUs for whisperx.
+
+## Building the Cog image
+
+Requires [Cog](https://github.com/replicate/cog) and a GPU for local runs.
+
+```bash
+cog build
+cog predict -i audio=@sample.wav
+```
+
+Model weights are pre-downloaded during the image build (`build.sh` / `cog.yaml`). The CI workflow `.github/workflows/docker-publish.yml` builds and pushes to `ghcr.io/charnesp/whisperx-cog` on pushes to `main`.
+
+To use the self-hosted bridge stacks with a locally built image, replace `ghcr.io/charnesp/whisperx-cog:latest` in `k8s/whisperx-stack.yaml` or `docker-compose.yml`.
+
+## Maintainer notes
+
+**[AGENTS.md](./AGENTS.md)** is the detailed reference for AI agents and maintainers: JSON/NaN sanitization, Cog runtime notes, bridge webhook HTTP errors, cache behavior, and code conventions.
+
+When changing bridge behavior, always run `scripts/check-bridge-sync.py` before committing.
+
+## Citation
 
 ```
 @misc{bain2023whisperx,
-      title={WhisperX: Time-Accurate Speech Transcription of Long-Form Audio}, 
+      title={WhisperX: Time-Accurate Speech Transcription of Long-Form Audio},
       author={Max Bain and Jaesung Huh and Tengda Han and Andrew Zisserman},
       year={2023},
       eprint={2303.00747},

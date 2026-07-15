@@ -2,6 +2,65 @@
 
 This file summarizes API behavior, gotchas, and conventions for the whisperx-cog project so that agents and humans can work on it consistently.
 
+For user-facing setup (Kubernetes, Docker Compose, API usage), see **[README.md](./README.md)**.
+
+## Code layout
+
+| Path | Role |
+|------|------|
+| `predict.py` | Cog `Predictor`, `Output` model, `healthcheck()`, transcribe/align/diarize pipeline |
+| `cog.yaml` | Cog build config; `cog_runtime: true` is **disabled** (coglet Output type limits) |
+| `bridge/bridge.py` | **Source of truth** for the Replicate-compatible HTTP bridge |
+| `bridge/README.md` | Maintainer pointer (sync workflow) |
+| `k8s/whisperx-stack.yaml` | Kubernetes Deployment (Cog + Redis + bridge); embeds `bridge.py` in ConfigMap `cog-bridge-script` |
+| `docker-compose.yml` | Docker Compose equivalent; mounts `bridge/bridge.py` directly |
+| `.env.example` | Template for Compose secrets (`BRIDGE_TOKEN`, `WEBHOOK_SECRET`, `HUGGINGFACE_TOKEN`) |
+| `scripts/sync-bridge-to-k8s.py` | Regenerate ConfigMap `bridge.py` block from `bridge/bridge.py` |
+| `scripts/check-bridge-sync.py` | Verify standalone file matches k8s ConfigMap |
+
+Published image: `ghcr.io/charnesp/whisperx-cog:latest`.
+
+## Bridge script — dual copies (keep in sync)
+
+The bridge logic lives in **`bridge/bridge.py`**. Two deployments consume it:
+
+| Deployment | How the script is loaded |
+|------------|--------------------------|
+| **Docker Compose** | Volume mount `./bridge/bridge.py` → `/scripts/bridge.py` |
+| **Kubernetes** | Inline in ConfigMap `cog-bridge-script`, key `bridge.py`, in `k8s/whisperx-stack.yaml` |
+
+**Workflow when editing the bridge:**
+
+1. Edit **`bridge/bridge.py`** only (never edit the ConfigMap block by hand unless syncing back to the standalone file).
+2. Run `python3 scripts/sync-bridge-to-k8s.py` to update the Kubernetes manifest.
+3. Run `python3 scripts/check-bridge-sync.py` before committing — both copies must match.
+
+The bridge hardcodes loopback addresses (`REDIS_HOST=127.0.0.1`, `COG_URL=http://127.0.0.1:5000`, internal webhook `http://localhost:8080/...`) because Cog, Redis, and bridge share one network namespace (k8s pod or Compose `network_mode: service:bridge`).
+
+### Environment variables
+
+| Variable (container) | Kubernetes secret key | Docker Compose `.env` | Purpose |
+|--------------------|----------------------|------------------------|---------|
+| `BRIDGE_AUTH_TOKEN` | `bridge-auth-secret` → `BRIDGE_TOKEN` | `BRIDGE_TOKEN` | External API: `Authorization: Bearer …` |
+| `WEBHOOK_SECRET` | `bridge-auth-secret` → `WEBHOOK_SECRET` | `WEBHOOK_SECRET` | Internal webhook path segment |
+| `HUGGINGFACE_TOKEN` | `hf-secret` → `HUGGINGFACE_TOKEN` | `HUGGINGFACE_TOKEN` | WhisperX / diarization models |
+
+### Bridge behavior
+
+- **Logs:** Significant actions use stdout prefixes **`[bridge ext]`** (HTTP **edge**: clients **outside** the pod — `GET`/`POST` API, cache outcome for those clients) and **`[bridge int]`** (in-pod legs: **Redis**, **Cog** HTTP proxy, **Cog→bridge webhook**). **`GET /health`** and **`GET /health-check`** stay silent. **`[bridge]`** is only the process boot line. Peers on loopback (`127.0.0.1` / `::1`) are treated as in-pod, so their API calls log under **`int`** on the edge logger. Use `kubectl logs` (bridge container) or `docker compose logs bridge` for troubleshooting.
+- **Webhook → Redis:** Cog POSTs completion payloads to `http://localhost:8080/<WEBHOOK_SECRET>/webhook?id=<prediction_id>`. The bridge runs a minimal **RESP2** Redis client (not `redis-py`), caps cached JSON at **200 MiB** (`REDIS_MAX_BULK_BYTES`), TTL **24 h** (`REDIS_MESSAGE_TTL`), and rejects **`Transfer-Encoding: chunked`** with **501** (Cog should send **`Content-Length`**).
+- **Webhook HTTP errors:**
+  - **400** `invalid_content_length` — malformed or negative `Content-Length`.
+  - **400** `invalid_prediction_id` — `id` query parameter does not match `^[a-zA-Z0-9_-]{1,64}$`; body is drained when `Content-Length` was already validated.
+  - **413** `payload_too_large` — body larger than the configured max; response includes **`Connection: close`**, then the bridge drains the body.
+  - **501** `unsupported_transfer_encoding` — chunked body not supported; **`Connection: close`**, then a **best-effort drain** (up to 64 MiB) of unread bytes.
+  - **503** `redis_set_failed` — Redis unreachable, protocol error, or unexpected reply; JSON body includes **`detail`**. With the Cog version you run, **webhook delivery may be retried on 5xx** (verify in that version’s source or by observing a second POST after a forced **503** — not guaranteed by the public Cog HTTP doc alone).
+- **GET** `GET /predictions/<id>`: **`id`** must match the same **`^[a-zA-Z0-9_-]{1,64}$`** pattern; otherwise **400** `invalid_prediction_id`.
+- **GET cache vs Cog:** A **Redis hit** returns the stored JSON immediately. **Cache miss** (`GET` returns Redis null bulk) or **Redis read failure** is logged distinctly; the handler then **proxies to Cog** (same status behavior as before for the API client on read errors).
+- **POST /predictions:** If the client omits `webhook`, the bridge injects the internal webhook and `webhook_events_filter: ["start", "completed"]`. If the client provides its own webhook, the request is forwarded unchanged and **nothing is stored in Redis**.
+- **Readiness probe:** For **`GET /health-check`** with **`silent`** proxying, a **malformed `Content-Length`** is treated as **no body** (`0`) so the probe still forwards to Cog instead of returning **400** from the bridge.
+- **Keep-alive:** Error responses that may leave the socket in an ambiguous state (**400**, **413**, **501**, **503** on the webhook path) send **`Connection: close`**.
+
 ## Cog / Replicate prediction API
 
 - **Cog HTTP API:** https://cog.run/http/
@@ -89,7 +148,7 @@ build:
   cog_runtime: true
 ```
 
-Ref: [Introducing a new Cog runtime](https://replicate.com/changelog/2025-07-21-cog-runtime).
+**This project keeps `cog_runtime` disabled** because coglet rejects `dict` / `list[dict]` in Output types. Ref: [Introducing a new Cog runtime](https://replicate.com/changelog/2025-07-21-cog-runtime).
 
 ## Project-specific gotchas
 
@@ -110,33 +169,14 @@ The Cog server sends the prediction result as JSON (e.g. to the webhook). Python
 ### Async predictions and webhooks
 
 - With `Prefer: respond-async`, the server returns `202 Accepted` and processes in the background. Updates are delivered **only via webhooks**; polling for status is not supported by Cog.
-- The bridge in `k8s/whisperx-stack.yaml` can inject an internal webhook and store the final prediction in Redis for `GET /predictions/<id>`. If the client provides its own webhook, the bridge does not store the result.
-
-### Bridge (`k8s/whisperx-stack.yaml` ConfigMap)
-
-- **Logs:** Significant actions use stdout prefixes **`[bridge ext]`** (HTTP **edge**: clients **outside** the pod — `GET`/`POST` API, cache outcome for those clients) and **`[bridge int]`** (in-pod legs: **Redis**, **Cog** HTTP proxy, **Cog→bridge webhook**). **`GET /health`** and **`GET /health-check`** stay silent. **`[bridge]`** is only the process boot line. Peers on loopback (`127.0.0.1` / `::1`) are treated as in-pod, so their API calls log under **`int`** on the edge logger. Use `kubectl logs` on the bridge container for troubleshooting.
-- **Webhook → Redis:** Cog POSTs completion payloads to `http://localhost:8080/<WEBHOOK_SECRET>/webhook?id=<prediction_id>`. The bridge runs a minimal **RESP2** Redis client (not `redis-py`), caps cached JSON at **200 MiB** (`REDIS_MAX_BULK_BYTES`), and rejects **`Transfer-Encoding: chunked`** with **501** (Cog should send **`Content-Length`**).
-- **Webhook HTTP errors:**
-  - **400** `invalid_content_length` — malformed or negative `Content-Length`.
-  - **400** `invalid_prediction_id` — `id` query parameter does not match `^[a-zA-Z0-9_-]{1,64}$`; body is drained when `Content-Length` was already validated.
-  - **413** `payload_too_large` — body larger than the configured max; response includes **`Connection: close`**, then the bridge drains the body.
-  - **501** `unsupported_transfer_encoding` — chunked body not supported; **`Connection: close`**, then a **best-effort drain** (up to 64 MiB) of unread bytes.
-  - **503** `redis_set_failed` — Redis unreachable, protocol error, or unexpected reply; JSON body includes **`detail`**. With the Cog version you run, **webhook delivery may be retried on 5xx** (verify in that version’s source or by observing a second POST after a forced **503** — not guaranteed by the public Cog HTTP doc alone).
-- **GET** `GET /predictions/<id>`: **`id`** must match the same **`^[a-zA-Z0-9_-]{1,64}$`** pattern; otherwise **400** `invalid_prediction_id`.
-- **GET cache vs Cog:** A **Redis hit** returns the stored JSON immediately. **Cache miss** (`GET` returns Redis null bulk) or **Redis read failure** is logged distinctly; the handler then **proxies to Cog** (same status behavior as before for the API client on read errors).
-- **Readiness probe:** For **`GET /health-check`** with **`silent`** proxying, a **malformed `Content-Length`** is treated as **no body** (`0`) so the probe still forwards to Cog instead of returning **400** from the bridge.
-- **Keep-alive:** Error responses that may leave the socket in an ambiguous state (**400**, **413**, **501**, **503** on the webhook path) send **`Connection: close`**.
+- The bridge injects an internal webhook on `POST /predictions` when the client does not provide one, and stores the final prediction in Redis for `GET /predictions/<id>`. If the client provides its own webhook, the bridge does not store the result.
 
 ### Health checks
 
 - **Cog** exposes **GET /health-check** (always 200; check JSON `status`: READY, STARTING, BUSY, SETUP_FAILED, DEFUNCT, UNHEALTHY). Optional **`healthcheck()`** on the Predictor: return `False` to set status UNHEALTHY.
 - This predictor implements **`healthcheck()`** and returns `torch.cuda.is_available()` so the container is UNHEALTHY if the GPU is missing or broken.
-- In k8s, the bridge proxies **GET /health-check** to Cog (no auth) and the Deployment uses **readinessProbe** on it; **livenessProbe** uses **GET /health** (bridge only).
-
-## Code layout
-
-- **`predict.py`** — Cog `Predictor`, `Output` model, `healthcheck()`, transcribe/align/diarize pipeline. Entrypoint for predictions.
-- **`k8s/whisperx-stack.yaml`** — Kubernetes deployment (Cog + Redis + bridge) for a Replicate-compatible API with webhooks.
+- **Kubernetes:** bridge proxies **GET /health-check** to Cog (no auth); **readinessProbe** on bridge `:8080/health-check`, **livenessProbe** on `:8080/health`.
+- **Docker Compose:** bridge **liveness** healthcheck on `GET /health` only; use manual `GET /health-check` for Cog readiness.
 
 ## References
 

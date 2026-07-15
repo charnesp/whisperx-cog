@@ -5,6 +5,7 @@ whisperx.egg-info/
 venv
 .venv
 hg_access_token.txt
+.env
 test_whisperx_run.py
 
 # Local tests & OS cruft

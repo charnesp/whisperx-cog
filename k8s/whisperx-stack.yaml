@@ -507,7 +507,6 @@ data:
             f"redis={REDIS_HOST!r}:{REDIS_PORT} max_bulk_bytes={REDIS_MAX_BULK_BYTES}"
         )
         ThreadedHTTPServer(('0.0.0.0', 8080), ReplicateCompatibleBridge).serve_forever()
-
 ---
 apiVersion: apps/v1
 kind: Deployment
