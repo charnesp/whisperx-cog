@@ -54,7 +54,7 @@ def _resolve_input_default(val: Any) -> Any:
 
 
 def _resolve_whisper_model_path(whisper_model: str) -> str:
-    """Use local path if it exists, otherwise HuggingFace repo ID for download."""
+    """Use baked local path if present, otherwise HuggingFace repo ID (runtime download)."""
     local_path = WHISPER_MODEL_LOCAL_PATHS[whisper_model]
     if os.path.isdir(local_path) and os.path.isfile(
         os.path.join(local_path, "model.bin")

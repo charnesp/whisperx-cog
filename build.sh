@@ -1,6 +1,11 @@
 #!/bin/bash
+# Bake Whisper weights into the image. Default: large-v3-turbo only (~3 GB saved vs all models).
+# Other models (tiny, large-v3) download at runtime via HuggingFace when requested — see predict.py.
+# Override: WHISPER_BAKE_MODELS=large-v3-turbo,tiny  or  WHISPER_BAKE_MODELS=all
 
 set -e
+
+WHISPER_BAKE_MODELS="${WHISPER_BAKE_MODELS:-large-v3-turbo}"
 
 download() {
   local file_url="$1"
@@ -9,42 +14,54 @@ download() {
   if [ ! -e "$destination_path" ]; then
     wget -O "$destination_path" "$file_url"
   else
-      echo "$destination_path already exists. No need to download."
+    echo "$destination_path already exists. No need to download."
   fi
 }
 
-# faster-whisper-tiny (Systran/faster-whisper-tiny)
-faster_whisper_tiny_dir=models/faster-whisper-tiny
-mkdir -p $faster_whisper_tiny_dir
-download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/config.json" "$faster_whisper_tiny_dir/config.json"
-download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/model.bin" "$faster_whisper_tiny_dir/model.bin"
-download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/preprocessor_config.json" "$faster_whisper_tiny_dir/preprocessor_config.json"
-download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/tokenizer.json" "$faster_whisper_tiny_dir/tokenizer.json"
-download "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/vocabulary.json" "$faster_whisper_tiny_dir/vocabulary.json"
+bake_faster_whisper() {
+  local name="$1"
+  local hf_repo="$2"
+  local dir="models/faster-whisper-${name}"
+  mkdir -p "$dir"
+  download "https://huggingface.co/${hf_repo}/resolve/main/config.json" "$dir/config.json"
+  download "https://huggingface.co/${hf_repo}/resolve/main/model.bin" "$dir/model.bin"
+  download "https://huggingface.co/${hf_repo}/resolve/main/preprocessor_config.json" "$dir/preprocessor_config.json"
+  download "https://huggingface.co/${hf_repo}/resolve/main/tokenizer.json" "$dir/tokenizer.json"
+  download "https://huggingface.co/${hf_repo}/resolve/main/vocabulary.json" "$dir/vocabulary.json"
+}
 
-# faster-whisper-large-v3 (Systran/faster-whisper-large-v3)
-faster_whisper_large_v3_dir=models/faster-whisper-large-v3
-mkdir -p $faster_whisper_large_v3_dir
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/config.json" "$faster_whisper_large_v3_dir/config.json"
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/model.bin" "$faster_whisper_large_v3_dir/model.bin"
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/preprocessor_config.json" "$faster_whisper_large_v3_dir/preprocessor_config.json"
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/tokenizer.json" "$faster_whisper_large_v3_dir/tokenizer.json"
-download "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/vocabulary.json" "$faster_whisper_large_v3_dir/vocabulary.json"
+bake_whisper_model() {
+  case "$1" in
+    tiny) bake_faster_whisper "tiny" "Systran/faster-whisper-tiny" ;;
+    large-v3) bake_faster_whisper "large-v3" "Systran/faster-whisper-large-v3" ;;
+    large-v3-turbo)
+      bake_faster_whisper "large-v3-turbo" "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+      ;;
+    all)
+      bake_whisper_model tiny
+      bake_whisper_model large-v3
+      bake_whisper_model large-v3-turbo
+      ;;
+    *)
+      echo "Unknown WHISPER_BAKE_MODELS entry: $1 (expected tiny, large-v3, large-v3-turbo, or all)"
+      exit 1
+      ;;
+  esac
+}
 
-# large-v3-turbo (mobiuslabsgmbh/faster-whisper-large-v3-turbo) — faster, less VRAM
-faster_whisper_turbo_dir=models/faster-whisper-large-v3-turbo
-mkdir -p $faster_whisper_turbo_dir
-download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/config.json" "$faster_whisper_turbo_dir/config.json"
-download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/model.bin" "$faster_whisper_turbo_dir/model.bin"
-download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/preprocessor_config.json" "$faster_whisper_turbo_dir/preprocessor_config.json"
-download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/tokenizer.json" "$faster_whisper_turbo_dir/tokenizer.json"
-download "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/vocabulary.json" "$faster_whisper_turbo_dir/vocabulary.json"
-
-pip install -U whisperx
+if [ "$WHISPER_BAKE_MODELS" = "all" ]; then
+  bake_whisper_model all
+else
+  IFS=',' read -ra _models <<< "$WHISPER_BAKE_MODELS"
+  for _model in "${_models[@]}"; do
+    _model="${_model// /}"
+    [ -n "$_model" ] || continue
+    bake_whisper_model "$_model"
+  done
+fi
 
 vad_model_dir=models/vad
-mkdir -p $vad_model_dir
-
-download $(python3 ./get_vad_model_url.py) "$vad_model_dir/whisperx-vad-segmentation.bin"
+mkdir -p "$vad_model_dir"
+download "$(python3 ./get_vad_model_url.py)" "$vad_model_dir/whisperx-vad-segmentation.bin"
 
 cog run python

@@ -3,18 +3,18 @@ build:
   cuda: "12.5"
   gpu: true
   system_packages:
-    - "ffmpeg"
     - "gnupg"
     - "curl"
   python_version: "3.13"
   python_requirements: requirements.txt
   run:
-    # FFmpeg 6 (libavutil58) for torchcodec/pyannote — add PPA manually (add-apt-repository needs apt_pkg for system Python)
+    # FFmpeg 6 (libavutil58) for torchcodec/pyannote — do not add ffmpeg to system_packages
+    # (default Ubuntu apt ships an older ffmpeg; PPA install below is the only ffmpeg we want)
     - curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF4E48910A020E77056748B745738AE8480447DDF" | gpg --dearmor -o /usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg
     - echo "deb [signed-by=/usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg] http://ppa.launchpad.net/ubuntuhandbook1/ffmpeg6/ubuntu jammy main" > /etc/apt/sources.list.d/ubuntuhandbook1-ffmpeg6.list
     - apt-get update -qq && apt-get install -qqy --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-    # Pre-download Whisper + VAD models (same as build.sh, without final "cog run python")
-    - head -n -1 build.sh | bash
+    # Pre-download large-v3-turbo + VAD (build.sh; tiny/large-v3 load from HuggingFace on demand)
+    - WHISPER_BAKE_MODELS=large-v3-turbo head -n -1 build.sh | bash
 environment:
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
 predict: "predict.py:Predictor"

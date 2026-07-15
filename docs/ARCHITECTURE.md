@@ -24,7 +24,7 @@ System map for whisperx-cog. User-facing setup lives in [README.md](../README.md
 | **Bridge** | `bridge/bridge.py` | Replicate-compatible proxy, webhook→Redis cache | ML inference |
 | **Bridge sync** | `scripts/bridge_k8s.py`, `scripts/check-bridge-sync.py` | Verify k8s uses bridge GHCR image | Runtime HTTP |
 | **Deploy** | `k8s/`, `docker-compose.yml` | Orchestration, secrets, probes | Application logic |
-| **Build** | `cog.yaml`, `build.sh` | Image build, model pre-download | Request handling |
+| **Build** | `cog.yaml`, `build.sh` | Image build; bakes `large-v3-turbo` + VAD (other ASR models on demand) | Request handling |
 
 ## Data flow — prediction
 

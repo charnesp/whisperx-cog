@@ -363,7 +363,18 @@ cog build
 cog predict -i audio=@sample.wav
 ```
 
-Model weights are pre-downloaded during the image build (`build.sh` / `cog.yaml`). The CI workflow `.github/workflows/docker-publish.yml` builds and pushes to `ghcr.io/charnesp/whisperx-cog` on pushes to `main`.
+Model weights: the Docker build bakes **`large-v3-turbo`** and the VAD model only (~3 GB less than baking all Whisper variants). Requests for `tiny` or `large-v3` download from HuggingFace on first use (see `predict.py`).
+
+To bake extra models at build time:
+
+```bash
+WHISPER_BAKE_MODELS=all bash build.sh          # local: all three ASR models
+WHISPER_BAKE_MODELS=large-v3-turbo,tiny cog build
+```
+
+FFmpeg **6** is installed once from a PPA during `cog build` (required for pyannote/torchcodec). It is not listed in `system_packages` — the default Ubuntu package is too old.
+
+The CI workflow `.github/workflows/docker-publish.yml` builds and pushes to `ghcr.io/charnesp/whisperx-cog` on pushes to `main`.
 
 To use the self-hosted bridge stacks with a locally built image, replace `ghcr.io/charnesp/whisperx-cog:latest` in `k8s/whisperx-stack.yaml` or `docker-compose.yml`.
 
