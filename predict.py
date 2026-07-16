@@ -20,6 +20,7 @@ import whisperx
 from whisperx.diarize import DiarizationPipeline
 from json_sanitize import sanitize_error_message, sanitize_for_json
 from hf_token import require_diarization_token
+from model_paths import resolve_vad_source_path, resolve_whisper_model_path
 import tempfile
 import time
 import torch
@@ -27,19 +28,6 @@ import ffmpeg
 
 compute_type = "float16"  # change to "int8" if low on GPU mem (may reduce accuracy)
 device = "cuda"
-
-# Local paths used when models are pre-downloaded (e.g. in Docker build)
-WHISPER_MODEL_LOCAL_PATHS = {
-    "tiny": "./models/faster-whisper-tiny",
-    "large-v3": "./models/faster-whisper-large-v3",
-    "large-v3-turbo": "./models/faster-whisper-large-v3-turbo",
-}
-# HuggingFace repo IDs for download when local path does not exist (e.g. local dev)
-WHISPER_MODEL_HF_IDS = {
-    "tiny": "Systran/faster-whisper-tiny",
-    "large-v3": "Systran/faster-whisper-large-v3",
-    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-}
 
 
 def _resolve_input_default(val: Any) -> Any:
@@ -53,16 +41,6 @@ def _resolve_input_default(val: Any) -> Any:
     return val
 
 
-def _resolve_whisper_model_path(whisper_model: str) -> str:
-    """Use baked local path if present, otherwise HuggingFace repo ID (runtime download)."""
-    local_path = WHISPER_MODEL_LOCAL_PATHS[whisper_model]
-    if os.path.isdir(local_path) and os.path.isfile(
-        os.path.join(local_path, "model.bin")
-    ):
-        return local_path
-    return WHISPER_MODEL_HF_IDS[whisper_model]
-
-
 class Output(BaseModel):
     segments: Any  # list of segment dicts (start, end, text, words?, speaker?)
     detected_language: str
@@ -71,16 +49,14 @@ class Output(BaseModel):
 
 class Predictor(BasePredictor):
     def setup(self):
-        source_folder = "./models/vad"
         destination_folder = "../root/.cache/torch"
-        file_name = "whisperx-vad-segmentation.bin"
-
         os.makedirs(destination_folder, exist_ok=True)
 
-        source_file_path = os.path.join(source_folder, file_name)
-        if os.path.exists(source_file_path):
-            destination_file_path = os.path.join(destination_folder, file_name)
-
+        source_file_path = resolve_vad_source_path()
+        if source_file_path:
+            destination_file_path = os.path.join(
+                destination_folder, os.path.basename(source_file_path)
+            )
             if not os.path.exists(destination_file_path):
                 shutil.copy(source_file_path, destination_folder)
 
@@ -211,7 +187,7 @@ class Predictor(BasePredictor):
             max_speakers = _resolve_input_default(max_speakers)
             debug = _resolve_input_default(debug)
 
-            whisper_arch = _resolve_whisper_model_path(whisper_model)
+            whisper_arch = resolve_whisper_model_path(whisper_model)
             asr_options = {
                 "temperatures": [temperature],
                 "initial_prompt": initial_prompt,

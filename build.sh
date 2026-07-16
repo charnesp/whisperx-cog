@@ -1,11 +1,12 @@
 #!/bin/bash
-# Bake Whisper weights into the image. Default: large-v3-turbo only (~3 GB saved vs all models).
-# Other models (tiny, large-v3) download at runtime via HuggingFace when requested — see predict.py.
-# Override: WHISPER_BAKE_MODELS=large-v3-turbo,tiny  or  WHISPER_BAKE_MODELS=all
+# Local helper: bake Whisper weights into ./models (for dev).
+# Docker/Cog bake uses cog.yaml → /models (outside COPY . /src). See docs/TESTING.md / README.
+# Default: large-v3-turbo only. Override: WHISPER_BAKE_MODELS=all
 
-set -e
+set -euo pipefail
 
 WHISPER_BAKE_MODELS="${WHISPER_BAKE_MODELS:-large-v3-turbo}"
+MODELS_ROOT="${MODELS_ROOT:-./models}"
 
 download() {
   local file_url="$1"
@@ -21,7 +22,7 @@ download() {
 bake_faster_whisper() {
   local name="$1"
   local hf_repo="$2"
-  local dir="models/faster-whisper-${name}"
+  local dir="${MODELS_ROOT}/faster-whisper-${name}"
   mkdir -p "$dir"
   download "https://huggingface.co/${hf_repo}/resolve/main/config.json" "$dir/config.json"
   download "https://huggingface.co/${hf_repo}/resolve/main/model.bin" "$dir/model.bin"
@@ -60,8 +61,8 @@ else
   done
 fi
 
-vad_model_dir=models/vad
+vad_model_dir="${MODELS_ROOT}/vad"
 mkdir -p "$vad_model_dir"
 download "$(python3 ./get_vad_model_url.py)" "$vad_model_dir/whisperx-vad-segmentation.bin"
 
-cog run python
+echo "Baked models under ${MODELS_ROOT} (WHISPER_BAKE_MODELS=${WHISPER_BAKE_MODELS})"

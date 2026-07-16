@@ -12,7 +12,7 @@ PYTHON ?= python3
 ## Fast checks (no GPU, no cog): bridge sync, compile, yaml, harness artifacts
 smoke:
 	$(PYTHON) scripts/check-bridge-sync.py
-	$(PYTHON) -m py_compile json_sanitize.py hf_token.py bridge/bridge.py bridge/openai_compat.py scripts/bridge_k8s.py scripts/check-bridge-sync.py scripts/sync-bridge-to-k8s.py scripts/harness_audit.py
+	$(PYTHON) -m py_compile json_sanitize.py hf_token.py model_paths.py bridge/bridge.py bridge/openai_compat.py scripts/bridge_k8s.py scripts/check-bridge-sync.py scripts/sync-bridge-to-k8s.py scripts/harness_audit.py
 	$(PYTHON) scripts/harness_audit.py --smoke-only
 
 ## smoke + unit tests

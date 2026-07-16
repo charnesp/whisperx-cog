@@ -5,6 +5,7 @@ build:
   system_packages:
     - "gnupg"
     - "curl"
+    - "wget"
   python_version: "3.13"
   python_requirements: requirements.txt
   run:
@@ -13,8 +14,21 @@ build:
     - curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF4E48910A020E77056748B745738AE8480447DDF" | gpg --dearmor -o /usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg
     - echo "deb [signed-by=/usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg] http://ppa.launchpad.net/ubuntuhandbook1/ffmpeg6/ubuntu jammy main" > /etc/apt/sources.list.d/ubuntuhandbook1-ffmpeg6.list
     - apt-get update -qq && apt-get install -qqy --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-    # Pre-download large-v3-turbo + VAD (build.sh; tiny/large-v3 load from HuggingFace on demand)
-    - WHISPER_BAKE_MODELS=large-v3-turbo head -n -1 build.sh | bash
+    # Bake weights to /models BEFORE Cog COPY . /src (build.sh is not available yet;
+    # downloading under /src would also risk being wiped). turbo-only by default.
+    - |
+      set -euo pipefail
+      MODEL_DIR=/models/faster-whisper-large-v3-turbo
+      mkdir -p "$MODEL_DIR" /models/vad
+      BASE=https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main
+      for f in config.json model.bin preprocessor_config.json tokenizer.json vocabulary.json; do
+        wget -q --show-progress -O "$MODEL_DIR/$f" "$BASE/$f"
+      done
+      test -s "$MODEL_DIR/model.bin"
+      VAD_URL=$(python3 -c "import whisperx.vad; print(whisperx.vad.VAD_SEGMENTATION_URL)")
+      wget -q --show-progress -O /models/vad/whisperx-vad-segmentation.bin "$VAD_URL"
+      test -s /models/vad/whisperx-vad-segmentation.bin
+      ls -lh "$MODEL_DIR/model.bin" /models/vad/whisperx-vad-segmentation.bin
 environment:
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
 predict: "predict.py:Predictor"

@@ -32,6 +32,7 @@ After editing **`bridge/*.py`**: push to rebuild `ghcr.io/charnesp/whisperx-cog-
 |------|------|
 | `predict.py` | Cog Predictor — transcribe / align / diarize |
 | `json_sanitize.py` | JSON-safe output (NaN/inf); **unit-tested, no torch** |
+| `model_paths.py` | Baked `/models` vs HF fallback; **unit-tested, no torch** |
 | `bridge/bridge.py` | Bridge source of truth (see dual-copy rule in docs/BRIDGE.md) |
 | `k8s/whisperx-stack.yaml` | Kubernetes stack (Cog + Redis + bridge GHCR image) |
 | `docker-compose.yml` | Compose stack (mounts bridge.py) |
