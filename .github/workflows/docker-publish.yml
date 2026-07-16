@@ -59,8 +59,7 @@ jobs:
           docker run --rm --entrypoint bash ${{ env.IMAGE_NAME }}:${{ github.sha }} -c '
             set -euo pipefail
             test -s /models/faster-whisper-large-v3-turbo/model.bin
-            test -s /models/vad/whisperx-vad-segmentation.bin
-            ls -lh /models/faster-whisper-large-v3-turbo/model.bin /models/vad/whisperx-vad-segmentation.bin
+            ls -lh /models/faster-whisper-large-v3-turbo/model.bin
           '
 
       - name: Tag image as latest

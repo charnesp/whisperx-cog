@@ -14,17 +14,16 @@ build:
     - curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF4E48910A020E77056748B745738AE8480447DDF" | gpg --dearmor -o /usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg
     - echo "deb [signed-by=/usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg] http://ppa.launchpad.net/ubuntuhandbook1/ffmpeg6/ubuntu jammy main" > /etc/apt/sources.list.d/ubuntuhandbook1-ffmpeg6.list
     - apt-get update -qq && apt-get install -qqy --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-    # Bake turbo + VAD to /models BEFORE Cog COPY . /src (one command per list item — Cog rejects newlines in run)
-    - mkdir -p /models/faster-whisper-large-v3-turbo /models/vad
+    # Bake turbo to /models BEFORE Cog COPY . /src (one command per list item — Cog rejects newlines in run).
+    # VAD is bundled in whisperx>=3.2 (whisperx/assets/pytorch_model.bin) — do not download from S3.
+    - mkdir -p /models/faster-whisper-large-v3-turbo
     - wget -q -O /models/faster-whisper-large-v3-turbo/config.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/config.json
     - wget -q -O /models/faster-whisper-large-v3-turbo/model.bin https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/model.bin
     - wget -q -O /models/faster-whisper-large-v3-turbo/preprocessor_config.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/preprocessor_config.json
     - wget -q -O /models/faster-whisper-large-v3-turbo/tokenizer.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/tokenizer.json
     - wget -q -O /models/faster-whisper-large-v3-turbo/vocabulary.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/vocabulary.json
     - test -s /models/faster-whisper-large-v3-turbo/model.bin
-    - python3 -c "import whisperx.vad, urllib.request; urllib.request.urlretrieve(whisperx.vad.VAD_SEGMENTATION_URL, '/models/vad/whisperx-vad-segmentation.bin')"
-    - test -s /models/vad/whisperx-vad-segmentation.bin
-    - ls -lh /models/faster-whisper-large-v3-turbo/model.bin /models/vad/whisperx-vad-segmentation.bin
+    - ls -lh /models/faster-whisper-large-v3-turbo/model.bin
 environment:
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
 predict: "predict.py:Predictor"

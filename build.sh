@@ -63,6 +63,7 @@ fi
 
 vad_model_dir="${MODELS_ROOT}/vad"
 mkdir -p "$vad_model_dir"
-download "$(python3 ./get_vad_model_url.py)" "$vad_model_dir/whisperx-vad-segmentation.bin"
+# VAD is bundled in whisperx>=3.2 (package assets). Skip obsolete S3 download.
+echo "Skipping VAD bake (bundled in whisperx package assets)"
 
 echo "Baked models under ${MODELS_ROOT} (WHISPER_BAKE_MODELS=${WHISPER_BAKE_MODELS})"

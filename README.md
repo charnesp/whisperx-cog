@@ -363,7 +363,7 @@ cog build
 cog predict -i audio=@sample.wav
 ```
 
-Model weights: Cog `run:` steps bake **`large-v3-turbo`** + VAD into **`/models`** (outside `/src`, because Cog copies source *after* `run` and the old `build.sh` bake never ran). Requests for `tiny` or `large-v3` download from HuggingFace on first use.
+Model weights: Cog `run:` steps bake **`large-v3-turbo`** into **`/models`** (outside `/src`, because Cog copies source *after* `run`). VAD weights ship inside the `whisperx` package (no separate download). Requests for `tiny` or `large-v3` download from HuggingFace on first use.
 
 Local bake into `./models` (dev only):
 
