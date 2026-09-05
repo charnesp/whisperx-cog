@@ -100,7 +100,8 @@ Clients ──► :8080 bridge ──► proxy ──► :5000 Cog (whisperx)
 ### Using the API
 
 - **Endpoint:** `http://<host>:8080`
-- **Create a prediction:** `POST /predictions` with JSON body (e.g. `input` with `audio` URL and options). Header: `Authorization: Bearer <BRIDGE_TOKEN>`.
+- **Create a prediction:** `POST /predictions` with a JSON body (e.g. `input` with `audio_file` URL or data URI and options) **or** a `multipart/form-data` body. Header: `Authorization: Bearer ***`
+- **Multipart upload:** `POST /predictions` with `Content-Type: multipart/form-data`, a `file` part (binary audio) and optional fields (e.g. `language`). The bridge converts it server-side into a Cog JSON prediction (`input.audio_file` = data URI, other fields merged into `input`), mirroring Replicate. Accepted audio extensions: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm. File limit: 25 MB (`OPENAI_STT_MAX_FILE_SIZE_MB`). Errors: `missing_audio_file` (400), `unsupported_audio_format` (422), `payload_too_large` (413), `invalid_multipart_form` (400).
 - **Get result:** `GET /predictions/<id>` with the same Bearer token. Returns the cached prediction JSON once the webhook has fired (or proxies to Cog on cache miss).
 - **Liveness:** `GET /health` (no auth) — bridge process only.
 - **Readiness:** `GET /health-check` (no auth) — proxied to Cog; see [Health checks](#health-checks).

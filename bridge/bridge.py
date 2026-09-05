@@ -477,21 +477,50 @@ class ReplicateCompatibleBridge(BaseHTTPRequestHandler):
             )
         target_path = self.path
         target_method = method
+        override_content_type = None
 
         if method == "POST" and self.path.strip('/') == "predictions":
+            content_type = (self.headers.get("Content-Type") or "").lower()
+            if content_type.startswith("multipart/form-data"):
+                input_data, err = openai_compat.predictions_multipart_to_input(
+                    self.headers, req_body
+                )
+                if err is not None:
+                    status, payload = err
+                    if not silent:
+                        bridge_log_int(
+                            f"cog proxy predictions multipart rejected status={status} "
+                            f"path={self.path!r}"
+                        )
+                    self._send_json(status, payload, close_connection=True)
+                    return
+                data = {"input": input_data}
+                bridge_log_int(
+                    f"cog proxy predictions multipart converted "
+                    f"input_keys={sorted(input_data.keys())}"
+                )
+                # Cog expects JSON on /predictions; strip the client's multipart header
+                override_content_type = "application/json"
+            else:
+                try:
+                    data = json.loads(req_body)
+                except Exception:
+                    data = None
             try:
-                data = json.loads(req_body)
-                generated_id = data.get("id") or str(uuid.uuid4().hex)[:24]
-                data["id"] = generated_id
-                if "webhook" not in data :
-                    data["webhook"] = f"http://localhost:8080/{WEBHOOK_SECRET}/webhook?id={generated_id}"
-                    data["webhook_events_filter"] = ["start", "completed"]
-                req_body = json.dumps(data).encode('utf-8')
-                if not silent:
-                    bridge_log_int(
-                        f"cog proxy predictions POST injected webhook prediction_id={generated_id!r} "
-                        f"outgoing_body_bytes={len(req_body)}"
-                    )
+                if data is not None and not isinstance(data, dict):
+                    raise ValueError("prediction body must be a JSON object")
+                if data is not None:
+                    generated_id = data.get("id") or str(uuid.uuid4().hex)[:24]
+                    data["id"] = generated_id
+                    if "webhook" not in data :
+                        data["webhook"] = f"http://localhost:8080/{WEBHOOK_SECRET}/webhook?id={generated_id}"
+                        data["webhook_events_filter"] = ["start", "completed"]
+                    req_body = json.dumps(data).encode('utf-8')
+                    if not silent:
+                        bridge_log_int(
+                            f"cog proxy predictions POST injected webhook prediction_id={generated_id!r} "
+                            f"outgoing_body_bytes={len(req_body)}"
+                        )
             except Exception as ex:
                 if not silent:
                     bridge_log_int(f"cog proxy predictions JSON transform skipped detail={ex!r}")
@@ -501,6 +530,8 @@ class ReplicateCompatibleBridge(BaseHTTPRequestHandler):
         for k, v in self.headers.items():
             if k.lower() not in ['host', 'content-length', 'authorization']:
                 req.add_header(k, v)
+        if override_content_type:
+            req.add_header('Content-Type', override_content_type)
 
         if not silent:
             bridge_log_int(f"cog proxy forwarding method={method} url={url!r}")

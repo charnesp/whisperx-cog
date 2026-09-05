@@ -28,6 +28,25 @@ All floats in `output` must pass **`sanitize_for_json()`** before return (no NaN
 - Pattern: `^[a-zA-Z0-9_-]{1,64}$`
 - Bridge generates 24-char hex id if client omits `id` on `POST /predictions`
 
+## Prediction request input (`POST /predictions`)
+
+Two accepted body shapes at the bridge boundary:
+
+| Body | Content-Type | Bridge behavior |
+|------|--------------|-----------------|
+| JSON | `application/json` | Forwarded to Cog as-is (id + webhook injected when absent) |
+| Multipart | `multipart/form-data` | Converted to Cog JSON: `file` part → `input.audio_file` (base64 data URI), other form fields merged into `input` (JSON values parsed, strings kept) |
+
+Multipart rules: `file` extension must be in `flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm`; file size ≤ `OPENAI_STT_MAX_FILE_SIZE_BYTES` (default 25 MB). Cog always receives `Content-Type: application/json`.
+
+### Error envelope (multipart only, flat convention)
+
+```json
+{"error": "missing_audio_file|unsupported_audio_format|payload_too_large|invalid_multipart_form", "detail": "..."}
+```
+
+Unit tests: `tests/test_multipart_predictions.py`
+
 ## JSON boundary rule
 
 **Invariant:** Any value crossing the Cog HTTP / webhook boundary is processed by `json_sanitize.sanitize_for_json`. Do not return raw WhisperX tensors or un-sanitized floats from `predict()`.
