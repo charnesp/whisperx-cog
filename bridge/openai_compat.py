@@ -37,6 +37,10 @@ OPENAI_AUDIO_EXTENSIONS = frozenset(
     {"flac", "mp3", "mp4", "mpeg", "mpga", "m4a", "ogg", "wav", "webm"}
 )
 
+# Same extension set for the Replicate-compatible /predictions endpoint:
+# a multipart upload must name a supported audio file.
+PREDICTIONS_AUDIO_EXTENSIONS = OPENAI_AUDIO_EXTENSIONS
+
 EXTENSION_MIMES = {
     "flac": "audio/flac",
     "mp3": "audio/mpeg",
@@ -117,6 +121,10 @@ class FormField:
 class MultipartForm:
     def __init__(self) -> None:
         self._fields: Dict[str, FormField | List[FormField]] = {}
+
+    def keys(self) -> List[str]:
+        """Public accessor for field names (insertion order preserved)."""
+        return list(self._fields.keys())
 
     def __contains__(self, name: str) -> bool:
         return name in self._fields
@@ -235,9 +243,15 @@ def _extract_file(fs: MultipartForm) -> Tuple[Optional[str], bytes]:
         return None, b""
     field = fs["file"]
     if isinstance(field, list):
-        if not field:
+        # A repeated 'file' part may pair a stray text part with the real file:
+        # prefer the part that actually carries file data.
+        with_data = [f for f in field if f.file is not None and f.file.getvalue()]
+        if with_data:
+            field = with_data[0]
+        elif field:
+            field = field[0]
+        else:
             return None, b""
-        field = field[0]
     filename = field.filename or ""
     data = field.file.read() if field.file else b""
     return filename, data
@@ -455,6 +469,73 @@ def build_cog_input(parsed: Dict[str, Any]) -> Dict[str, Any]:
     if not is_diarize:
         cog_input["initial_prompt"] = parsed["prompt"]
     return cog_input
+
+
+def predictions_multipart_to_input(
+    headers, body: bytes
+) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[int, Dict[str, Any]]]]:
+    """Convert a multipart/form-data POST /predictions body to Cog JSON input.
+
+    Mirrors what Replicate does server-side: the uploaded file becomes a
+    base64 data URI in ``input.audio_file`` and every other form field is
+    merged into ``input`` (JSON values parsed when possible, strings kept).
+    Returns (input_dict, error_response); exactly one is None.
+    """
+    fs, err = parse_multipart_form(headers, io.BytesIO(body), len(body))
+    if err:
+        # Remap the OpenAI-style nested envelope to the bridge flat convention
+        status, detail = err[0], err[1].get("error", {}).get("message", "invalid multipart form")
+        return None, (status, {"error": "invalid_multipart_form", "detail": detail})
+
+    filename, file_bytes = _extract_file(fs)
+    if not file_bytes:
+        return None, (
+            400,
+            {
+                "error": "missing_audio_file",
+                "detail": "multipart /predictions requires a 'file' part with audio data",
+            },
+        )
+
+    if len(file_bytes) > OPENAI_STT_MAX_FILE_SIZE_BYTES:
+        return None, (
+            413,
+            {
+                "error": "payload_too_large",
+                "detail": f"file exceeds {OPENAI_STT_MAX_FILE_SIZE_MB}MB limit",
+            },
+        )
+
+    extension = _extension_from_filename(filename or "")
+    if extension not in PREDICTIONS_AUDIO_EXTENSIONS:
+        return None, (
+            422,
+            {
+                "error": "unsupported_audio_format",
+                "detail": f"file extension {extension!r} is not a supported audio format",
+            },
+        )
+
+    data_uri = build_audio_data_uri(file_bytes, extension)
+    input_data: Dict[str, Any] = {"audio_file": data_uri}
+    for name in fs.keys():
+        if name == "file":
+            continue
+        field = fs[name]
+        fields_list = field if isinstance(field, list) else [field]
+        # Prefer the file part over a text part when a field named 'file' is duplicated;
+        # handled by the _extract_file skip above. Text fields merge into input.
+        values = [f.value for f in fields_list if f.value is not None]
+        if not values:
+            continue
+        merged: List[Any] = []
+        for raw in values:
+            try:
+                merged.append(json.loads(raw))
+            except (json.JSONDecodeError, TypeError):
+                merged.append(raw)
+        input_data[name] = merged[0] if len(merged) == 1 else merged
+    return input_data, None
 
 
 def call_cog_sync(
