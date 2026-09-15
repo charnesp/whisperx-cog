@@ -12,3 +12,5 @@ transformers==4.57.6
 nagisa==0.2.11
 soundfile
 librosa
+# Required by qwen-asr for Korean word-level forced alignment (lazy import); runtime ImportError without it
+soynlp==0.0.493
