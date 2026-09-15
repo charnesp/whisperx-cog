@@ -397,6 +397,25 @@ def validate_transcription_request(
             400,
         )
 
+    # ENABLE_QWEN kill-switch, read at request time (no redeploy to toggle).
+    # Gate at the bridge so a disabled backend returns a clean 400 instead of
+    # a Cog-side 500; predict.py keeps its own gate as defense in depth.
+    # Same semantics as predict.qwen_enabled(): unset defaults to ENABLED,
+    # only explicit falsy values (0/false/empty/…) disable the backend.
+    if model in QWEN_MODELS:
+        enable_qwen = os.environ.get("ENABLE_QWEN")
+        if enable_qwen is not None and enable_qwen.strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return None, openai_error(
+                "qwen3-asr backend is disabled (ENABLE_QWEN)",
+                "invalid_request_error",
+                400,
+            )
+
     temperature, temp_err = _parse_temperature(_field_value(fs, "temperature"))
     if temp_err:
         return None, temp_err

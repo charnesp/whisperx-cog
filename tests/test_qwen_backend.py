@@ -18,6 +18,7 @@ importlib with stub modules registered in sys.modules first.
 from __future__ import annotations
 
 import importlib
+import io
 import os
 import sys
 import types
@@ -29,9 +30,41 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bridge"))
 
 import openai_compat
+from openai_compat import validate_transcription_request
 
 MODEL_MAP = openai_compat.MODEL_MAP
 build_cog_input = openai_compat.build_cog_input
+
+
+def _encode_multipart(fields, files):
+    """Encode a multipart/form-data body (same helper as test_openai_stt)."""
+    boundary = "----testboundary"
+    body = io.BytesIO()
+    for name, value in fields:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.write(f"{value}\r\n".encode())
+    for name, filename, content, content_type in files:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(
+            f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode()
+        )
+        body.write(f"Content-Type: {content_type}\r\n\r\n".encode())
+        body.write(content)
+        body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+    return boundary, body.getvalue()
+
+
+def _parse_multipart(body_bytes, content_type):
+    fs, err = openai_compat.parse_multipart_form(
+        {"Content-Type": content_type},
+        io.BytesIO(body_bytes),
+        len(body_bytes),
+    )
+    if err:
+        raise AssertionError(err)
+    return fs
 
 
 class _NoCtx:
@@ -47,7 +80,29 @@ class _Any:
         pass
 
 
-def _install_predict_stub_modules():
+def _pydantic_base_model():
+    """Return a working BaseModel base for predict.Output.
+
+    Prefer the real pydantic BaseModel when importable; otherwise use a tiny
+    kwargs-recording stub so Output(...) still instantiates in the GPU-free
+    test environment (predict.Output only needs attribute storage here).
+    """
+    try:
+        from pydantic import BaseModel as _BaseModel
+
+        return _BaseModel
+    except Exception:
+        pass
+
+    class _StubBaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    return _StubBaseModel
+
+
+def _install_predict_modules():
     """Register minimal stubs so predict.py can be imported without GPU deps."""
     stubs: dict[str, types.ModuleType] = {}
 
@@ -72,7 +127,15 @@ def _install_predict_stub_modules():
             is_available=lambda: False,
         ),
     )
-    make_module("cog", BasePredictor=_BasePredictor, Input=_Any, Path=_Any, BaseModel=object)
+    make_module(
+        "cog",
+        BasePredictor=_BasePredictor,
+        Input=_Any,
+        Path=_Any,
+        # BaseModel must be a real pydantic model: predict.Output subclasses it
+        # with fields and is instantiated at the end of _run_predict.
+        BaseModel=_pydantic_base_model(),
+    )
     make_module(
         "ffmpeg",
         probe=lambda p: {"streams": [], "format": {}},
@@ -100,7 +163,7 @@ def _install_predict_stub_modules():
     return stubs, asr_qwen
 
 
-_install_predict_stub_modules()
+_install_predict_modules()
 
 predict = importlib.import_module("predict")
 
@@ -128,8 +191,28 @@ class TestQwenBatchHelpers(unittest.TestCase):
         self.assertEqual(predict.resolve_qwen_batch_size(12, provided=True), 8)
 
     def test_explicit_batch_clamped_to_1(self):
-        self.assertEqual(predict.resolve_qwen_batch_size(0, provided=True), 1)
-        self.assertEqual(predict.resolve_qwen_batch_size(-3, provided=True), 1)
+        self.assertEqual(predict.resolve_qwen_batch_size(0, provided=True), 4)
+        self.assertEqual(predict.resolve_qwen_batch_size(-3, provided=True), 4)
+
+    def test_nonpositive_batch_logs_warning(self):
+        with self.assertLogs("predict", level="WARNING") as logs:
+            self.assertEqual(predict.resolve_qwen_batch_size(0, provided=True), 4)
+        joined = "\n".join(logs.output)
+        self.assertIn("0", joined)
+        self.assertIn(str(predict.QWEN_DEFAULT_BATCH), joined)
+
+    def test_clamp_above_max_logs_warning(self):
+        with self.assertLogs("predict", level="WARNING") as logs:
+            self.assertEqual(predict.resolve_qwen_batch_size(12, provided=True), 8)
+        joined = "\n".join(logs.output)
+        self.assertIn("12", joined)
+        self.assertIn("8", joined)
+
+    def test_in_range_batch_no_warning(self):
+        # 6 is within [1, 8]: no clamp warning should fire.
+        with mock.patch.object(predict.logger, "warning") as warn:
+            self.assertEqual(predict.resolve_qwen_batch_size(6, provided=True), 6)
+        warn.assert_not_called()
 
     def test_default_batch_constant(self):
         self.assertEqual(predict.QWEN_DEFAULT_BATCH, 4)
@@ -137,35 +220,48 @@ class TestQwenBatchHelpers(unittest.TestCase):
 
 
 class TestQwenContextHelpers(unittest.TestCase):
-    def test_hotwords_become_context(self):
-        ctx, truncated = predict.qwen_context_from_hotwords("Backblaze, Supabase")
-        self.assertEqual(ctx, "Backblaze, Supabase")
+    def test_hotwords_become_template_context(self):
+        """FIX 3: hotwords wrapped in the design.md §2 context template."""
+        ctx, truncated = predict.format_qwen_context("Backblaze, Supabase")
+        self.assertIn("Backblaze, Supabase", ctx)
+        self.assertIn("Contexte technique de la réunion", ctx)
+        self.assertIn("Termes, entités et noms propres attendus", ctx)
         self.assertFalse(truncated)
 
     def test_hotwords_absent_neutral_context(self):
-        ctx, truncated = predict.qwen_context_from_hotwords(None)
+        ctx, truncated = predict.format_qwen_context(None)
         self.assertEqual(ctx, "")
         self.assertFalse(truncated)
 
     def test_empty_hotwords_neutral_context(self):
-        ctx, truncated = predict.qwen_context_from_hotwords("   ")
+        ctx, truncated = predict.format_qwen_context("   ")
         self.assertEqual(ctx, "")
         self.assertFalse(truncated)
+
+    def test_context_cap_value(self):
+        self.assertEqual(predict.QWEN_CONTEXT_CAP, 2000)
 
     def test_oversized_context_truncated_to_cap(self):
         long_hotwords = "x" * (predict.QWEN_CONTEXT_CAP + 500)
         with self.assertLogs("predict", level="WARNING") as logs:
-            ctx, truncated = predict.qwen_context_from_hotwords(long_hotwords)
+            ctx, truncated = predict.format_qwen_context(long_hotwords)
         self.assertEqual(len(ctx), predict.QWEN_CONTEXT_CAP)
         self.assertTrue(truncated)
         joined = "\n".join(logs.output)
-        self.assertIn(str(predict.QWEN_CONTEXT_CAP + 500), joined)
+        # lengths only: original (template-wrapped) and truncated lengths
+        self.assertIn(str(len("Contexte technique de la réunion. Termes, entités et noms propres attendus : ") + predict.QWEN_CONTEXT_CAP + 500 + 1), joined)
         self.assertIn(str(predict.QWEN_CONTEXT_CAP), joined)
         # no hotword content in logs (lengths only)
         self.assertNotIn("xxxxx", joined)
 
-    def test_context_cap_value(self):
-        self.assertEqual(predict.QWEN_CONTEXT_CAP, 2000)
+    def test_context_cap_applies_after_template_assembly(self):
+        # Hotwords just under the cap must still be truncated after the
+        # template wrapper pushes the assembled context over 2000 chars.
+        hotwords = "y" * (predict.QWEN_CONTEXT_CAP - 10)
+        with self.assertLogs("predict", level="WARNING"):
+            ctx, truncated = predict.format_qwen_context(hotwords)
+        self.assertTrue(truncated)
+        self.assertEqual(len(ctx), predict.QWEN_CONTEXT_CAP)
 
 
 class TestEnableQwenKillSwitch(unittest.TestCase):
@@ -184,6 +280,123 @@ class TestEnableQwenKillSwitch(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as ctx:
                     predict.assert_qwen_enabled()
             self.assertIn("ENABLE_QWEN", str(ctx.exception))
+
+
+class TestWhisperPathBatchInvariant(unittest.TestCase):
+    """FIX 1: whisper path without batch_size must call transcribe with 64."""
+
+    def _run_predict_capture_transcribe(self, batch_size):
+        """Drive _run_predict on the whisper path with a stubbed model, capture
+        the batch_size passed to transcribe."""
+        captured = {}
+        model = types.SimpleNamespace(
+            transcribe=lambda audio, **kw: captured.update(kw)
+            or {"language": "en", "segments": []}
+        )
+        fake_result = {"language": "en", "segments": []}
+
+        with mock.patch.object(
+            predict.whisperx, "load_model", return_value=model
+        ), mock.patch.object(
+            predict.whisperx, "load_audio", return_value=[]
+        ), mock.patch.object(
+            predict, "get_audio_duration", return_value=1000.0
+        ), mock.patch.object(
+            predict, "align", side_effect=lambda *a, **k: fake_result
+        ), mock.patch.object(
+            predict, "diarize", side_effect=lambda *a, **k: fake_result
+        ):
+            predictor = predict.Predictor()
+            predictor._run_predict(
+                audio_file="clip.wav",
+                whisper_model="large-v3-turbo",
+                language="en",
+                language_detection_min_prob=0,
+                language_detection_max_tries=5,
+                initial_prompt=None,
+                hotwords=None,
+                batch_size=batch_size,
+                temperature=0,
+                vad_onset=0.5,
+                vad_offset=0.363,
+                align_output=False,
+                diarization=False,
+                huggingface_access_token=None,
+                min_speakers=None,
+                max_speakers=None,
+                debug=False,
+            )
+        return captured
+
+    def test_whisper_without_batch_size_transcribes_with_64(self):
+        captured = self._run_predict_capture_transcribe(None)
+        self.assertEqual(captured["batch_size"], 64)
+
+    def test_whisper_with_explicit_batch_size_passthrough(self):
+        captured = self._run_predict_capture_transcribe(16)
+        self.assertEqual(captured["batch_size"], 16)
+
+    def test_whisper_default_batch_constant(self):
+        self.assertEqual(predict.WHISPER_DEFAULT_BATCH, 64)
+
+    def test_build_cog_input_whisper_no_batch_size_field(self):
+        """Bridge: whisper request without batch_size omits the field entirely."""
+        parsed = {
+            "file_bytes": b"abc",
+            "extension": "ogg",
+            "whisper_model": "large-v3-turbo",
+            "language": "en",
+            "prompt": None,
+            "temperature": 0.0,
+            "hotwords": None,
+            "batch_size": None,
+            "is_diarize": False,
+            "known_speaker_names": [],
+        }
+        cog_input = build_cog_input(parsed)
+        self.assertNotIn("batch_size", cog_input)
+
+
+class TestBridgeEnableQwenGate(unittest.TestCase):
+    """FIX 2: ENABLE_QWEN kill-switch gated at the bridge (400, not 500)."""
+
+    def _fs(self, model="qwen3-asr"):
+        boundary, body = _encode_multipart(
+            [("model", model)],
+            [("file", "audio.ogg", b"abc", "audio/ogg")],
+        )
+        return _parse_multipart(body, f"multipart/form-data; boundary={boundary}")
+
+    def test_kill_switch_off_returns_400(self):
+        for value in ("0", "false", "False", ""):
+            with mock.patch.dict(os.environ, {"ENABLE_QWEN": value}):
+                parsed, err = validate_transcription_request(self._fs())
+            self.assertIsNone(parsed)
+            self.assertIsNotNone(err)
+            status, payload = err
+            self.assertEqual(status, 400)
+            self.assertEqual(payload["error"]["type"], "invalid_request_error")
+            self.assertIn("ENABLE_QWEN", payload["error"]["message"])
+
+    def test_kill_switch_unset_defaults_to_enabled(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            parsed, err = validate_transcription_request(self._fs())
+        self.assertIsNone(err)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["whisper_model"], "qwen3-asr")
+
+    def test_kill_switch_on_accepts_qwen_model(self):
+        for value in ("1", "true", "TRUE", "yes", "on"):
+            with mock.patch.dict(os.environ, {"ENABLE_QWEN": value}):
+                parsed, err = validate_transcription_request(self._fs())
+            self.assertIsNone(err)
+            self.assertEqual(parsed["whisper_model"], "qwen3-asr")
+
+    def test_kill_switch_does_not_block_whisper_models(self):
+        with mock.patch.dict(os.environ, {"ENABLE_QWEN": "0"}):
+            parsed, err = validate_transcription_request(self._fs(model="whisper-1"))
+        self.assertIsNone(err)
+        self.assertEqual(parsed["whisper_model"], "large-v3-turbo")
 
 
 class TestWhisperPathUnchanged(unittest.TestCase):
