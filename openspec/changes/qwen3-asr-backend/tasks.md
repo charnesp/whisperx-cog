@@ -1,32 +1,32 @@
 ## 1. Bridge — model alias and kill-switch
 
-- [ ] 1.1 RED: unit test asserting `MODEL_MAP` contains `"qwen3-asr": "qwen3-asr"` and that an unknown model still returns 400 (`invalid_request_error`)
-- [ ] 1.2 GREEN: add the `qwen3-asr` entry to `MODEL_MAP` in `bridge/openai_compat.py`
-- [ ] 1.3 RED: unit test — `model=qwen3-asr` with `ENABLE_QWEN` unset/empty → HTTP 400 with feature-disabled message; with `ENABLE_QWEN=1` → accepted
-- [ ] 1.4 GREEN: implement the `ENABLE_QWEN` gate (env read at request time, not import time) and run `make -f Makefile.harness check`
+- [x] 1.1 RED: unit test asserting `MODEL_MAP` contains `"qwen3-asr": "qwen3-asr"` and that an unknown model still returns 400 (`invalid_request_error`)
+- [x] 1.2 GREEN: add the `qwen3-asr` entry to `MODEL_MAP` in `bridge/openai_compat.py`
+- [x] 1.3 RED: unit test — `model=qwen3-asr` with `ENABLE_QWEN` unset/empty → HTTP 400 with feature-disabled message; with `ENABLE_QWEN=1` → accepted
+- [x] 1.4 GREEN: implement the `ENABLE_QWEN` gate (env read at request time, not import time) and run `make -f Makefile.harness check`
 
 ## 2. Bridge — hotwords and batch_size passthrough
 
-- [ ] 2.1 RED: unit test — `build_cog_input()` with `model=qwen3-asr` + `hotwords="Backblaze, Supabase"` → Cog input contains `hotwords` with that string; with `model=whisper-1` → `hotwords: None` (unchanged)
-- [ ] 2.2 GREEN: implement qwen-only `hotwords` passthrough in `build_cog_input()`
-- [ ] 2.3 RED: unit test — `batch_size` present in Cog input only when the client provides it; absent otherwise (both qwen and whisper models)
-- [ ] 2.4 GREEN: make `batch_size` optional in `build_cog_input()` (drop the hard-coded `64`); run `make -f Makefile.harness check`
+- [x] 2.1 RED: unit test — `build_cog_input()` with `model=qwen3-asr` + `hotwords="Backblaze, Supabase"` → Cog input contains `hotwords` with that string; with `model=whisper-1` → `hotwords: None` (unchanged)
+- [x] 2.2 GREEN: implement qwen-only `hotwords` passthrough in `build_cog_input()`
+- [x] 2.3 RED: unit test — `batch_size` present in Cog input only when the client provides it; absent otherwise (both qwen and whisper models)
+- [x] 2.4 GREEN: make `batch_size` optional in `build_cog_input()` (drop the hard-coded `64`); run `make -f Makefile.harness check`
 
 ## 3. Cog — context formatting helpers (GPU-free)
 
-- [ ] 3.1 RED: unit test for a pure `format_qwen_context(hotwords)` helper — template assembly identical to the validated live template (inlined in design.md §2: `Réunion technique chez [ENTREPRISE], [CONTEXTE]. Participants : [LISTE PARTICIPANTS]. Termes techniques : [LISTE VOCABULAIRE].`); >2000 chars → truncated to cap with a truncation flag returned (lengths only)
-- [ ] 3.2 GREEN: implement `format_qwen_context()` (no hotword content ever logged — assert log calls carry lengths only)
-- [ ] 3.3 RED: unit test for a pure `clamp_batch_size(value, default)` helper — None → 4 (QWEN_DEFAULT_BATCH), explicit 12 → 8, explicit 0/negative → 4, explicit 6 → 6
-- [ ] 3.4 GREEN: implement the clamp helper; run `make -f Makefile.harness check`
+- [x] 3.1 RED: unit test for a pure `format_qwen_context(hotwords)` helper — template assembly identical to the validated live template (inlined in design.md §2: `Réunion technique chez [ENTREPRISE], [CONTEXTE]. Participants : [LISTE PARTICIPANTS]. Termes techniques : [LISTE VOCABULAIRE].`); >2000 chars → truncated to cap with a truncation flag returned (lengths only)
+- [x] 3.2 GREEN: implement `format_qwen_context()` (no hotword content ever logged — assert log calls carry lengths only)
+- [x] 3.3 RED: unit test for a pure `clamp_batch_size(value, default)` helper — None → 4 (QWEN_DEFAULT_BATCH), explicit 12 → 8, explicit 0/negative → 4, explicit 6 → 6
+- [x] 3.4 GREEN: implement the clamp helper; run `make -f Makefile.harness check`
 
 ## 4. Cog — predict.py qwen branch (GPU path, manual smoke unless GPU CI is scoped)
 
-- [ ] 4.1 Add `qwen3-asr` to `whisper_model` choices in `predict.py` `Input`
-- [ ] 4.2 Branch model loading: `qwen3-asr` → load via the forked `whisperx.asr_qwen` with explicit `qwen_dtype="float16"`; faster-whisper load path untouched
-- [ ] 4.3 On the qwen path: apply `QWEN_DEFAULT_BATCH`/clamp (helper from 3.3), skip the `detect_language` loop (pass provided `language` as-is), forward `context` to `QwenAsrPipeline.transcribe` per batch
-- [ ] 4.4 Alignment on the qwen path: `Qwen/Qwen3-ForcedAligner-0.6B` from baked `/models`; pyannote diarization stage unchanged (output schema identical)
-- [ ] 4.5 Boot fail-fast: missing baked qwen weights + `HF_HUB_OFFLINE=1` → clear RuntimeError at model load
-- [ ] 4.6 Manual smoke on GPU: one short FR clip end-to-end (transcribe + align + diarize), word timestamps present, VRAM logged
+- [x] 4.1 Add `qwen3-asr` to `whisper_model` choices in `predict.py` `Input`
+- [x] 4.2 Branch model loading: `qwen3-asr` → load via the forked `whisperx.asr_qwen` with explicit `qwen_dtype="float16"`; faster-whisper load path untouched
+- [x] 4.3 On the qwen path: apply `QWEN_DEFAULT_BATCH`/clamp (helper from 3.3), skip the `detect_language` loop (pass provided `language` as-is), forward `context` to `QwenAsrPipeline.transcribe` per batch
+- [x] 4.4 Alignment on the qwen path: `Qwen/Qwen3-ForcedAligner-0.6B` from baked `/models`; pyannote diarization stage unchanged (output schema identical)
+- [x] 4.5 Boot fail-fast: missing baked qwen weights + `HF_HUB_OFFLINE=1` → clear RuntimeError at model load
+- [ ] 4.6 Manual smoke on GPU: one short FR clip end-to-end (transcribe + align + diarize), word timestamps present, VRAM logged <!-- manual GPU smoke pending E4 -->
 
 ## 5. Dependencies and baking
 
@@ -55,3 +55,29 @@
 
 - [ ] 8.1 Push image tag; redeploy; rollback plan = previous tag (< 5 min)
 - [ ] 8.2 Transcribe 1–2 real meetings in duplicate (turbo vs qwen+hotwords) before any default change; verify `REDIS_SOCKET_TIMEOUT` holds for 90-min meetings
+
+<!-- E3 review deviations (commit a4ae707, fix of d18db40):
+
+1. 3.1/3.2 template simplification (documented): the OpenAI multipart contract
+   has no entreprise/contexte/participants fields, so the full design.md §2
+   template cannot be filled. format_qwen_context() uses the simplified
+   wrapper 'Contexte technique de la réunion. Termes, entités et noms propres
+   attendus : <hotwords>.' keeping the technical-vocabulary section only.
+   Cap 2000 applied AFTER assembly (template wrapper counts toward the cap).
+
+2. 3.3 clamp semantics: 0/negative batch_size maps to QWEN_DEFAULT_BATCH=4
+   (not 1) — a non-positive value is a client mistake, not an intentional
+   single-threaded run. Clamp emits a warning log with old/new values (ints,
+   no PII).
+
+3. 1.3/1.4 gate semantics: unset ENABLE_QWEN defaults to ENABLED (matches
+   predict.qwen_enabled()); explicit falsy values (0/false/empty/no/off/…)
+   disable. Gate lives in the bridge (400 invalid_request_error) with the
+   predict.py RuntimeError kept as defense in depth.
+
+4. Whisper-path batch regression fixed during review: bridge no longer
+   hard-codes batch_size: 64 (per 2.4), which exposed the fork's
+   `batch_size or self._batch_size` fallback — None reached the transformers
+   pipeline (effective batch 1). predict.py now passes 64 explicitly on the
+   whisper path when batch_size is absent (invariance tests added).
+-->
