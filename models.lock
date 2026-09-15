@@ -1,0 +1,58 @@
+# Pinned HF revisions for models baked into /models (cog.yaml build-time wget).
+# Revisions retrieved from the Hugging Face Hub API (GET /api/models/<repo>, field "sha")
+# on 2026-09-15. Used with HF_HUB_OFFLINE=1: baked weights must match these revisions.
+models:
+  # ASR pipeline (Qwen3-ASR-1.7B, fp16)
+  - repo: Qwen/Qwen3-ASR-1.7B
+    revision: 7278e1e70fe206f11671096ffdd38061171dd6e5
+    expected_files:
+      - config.json
+      - generation_config.json
+      - preprocessor_config.json
+      - tokenizer_config.json
+      - vocab.json
+      - merges.txt
+      - chat_template.json
+      - model-00001-of-00002.safetensors
+      - model-00002-of-00002.safetensors
+      - model.safetensors.index.json
+
+  # Forced alignment on the qwen path (word-level timestamps)
+  - repo: Qwen/Qwen3-ForcedAligner-0.6B
+    revision: c7cbfc2048c462b0d63a45797104fc9db3ad62b7
+    expected_files:
+      - config.json
+      - generation_config.json
+      - preprocessor_config.json
+      - tokenizer_config.json
+      - vocab.json
+      - merges.txt
+      - chat_template.json
+      - model.safetensors
+
+  # faster-whisper backends (already baked for large-v3-turbo; large-v3/tiny same pattern)
+  - repo: mobiuslabsgmbh/faster-whisper-large-v3-turbo
+    revision: 0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf
+    expected_files:
+      - config.json
+      - preprocessor_config.json
+      - tokenizer.json
+      - vocabulary.json
+      - model.bin
+
+  - repo: Systran/faster-whisper-large-v3
+    revision: edaa852ec7e145841d8ffdb056a99866b5f0a478
+    expected_files:
+      - config.json
+      - preprocessor_config.json
+      - tokenizer.json
+      - vocabulary.json
+      - model.bin
+
+  - repo: Systran/faster-whisper-tiny
+    revision: d90ca5fe260221311c53c58e660288d3deb8d356
+    expected_files:
+      - config.json
+      - tokenizer.json
+      - vocabulary.txt
+      - model.bin

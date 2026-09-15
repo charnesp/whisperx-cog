@@ -1,3 +1,14 @@
 ffmpeg-python
 torch==2.8.0
-whisperx
+# Fork of m-bain/whisperX: upstream PR #1401 (qwen3-asr backend) + context patch (branch qwen3-asr)
+whisperx @ git+https://github.com/charnesp/whisperX@c49b26379f40863767e3c42d9afed5dc4221f54f
+# qwen-asr must be installed WITHOUT its transitive deps: gradio/flask/vllm are forbidden
+# (CVE surface, image size, pydantic/starlette pin conflicts). requirements files cannot
+# express per-line --no-deps; the Cog build resolves this (install qwen-asr with --no-deps,
+# then the minimal inference deps below, verified against the qwen_asr 0.0.6 wheel imports).
+qwen-asr==0.0.6
+# Minimal explicit deps for qwen_asr inference (transformers backend):
+transformers==4.57.6
+nagisa==0.2.11
+soundfile
+librosa
