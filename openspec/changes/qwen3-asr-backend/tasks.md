@@ -14,7 +14,7 @@
 
 ## 3. Cog — context formatting helpers (GPU-free)
 
-- [ ] 3.1 RED: unit test for a pure `format_qwen_context(hotwords)` helper — template assembly identical to the validated live template; >2000 chars → truncated to cap with a truncation flag returned (lengths only)
+- [ ] 3.1 RED: unit test for a pure `format_qwen_context(hotwords)` helper — template assembly identical to the validated live template (inlined in design.md §2: `Réunion technique chez [ENTREPRISE], [CONTEXTE]. Participants : [LISTE PARTICIPANTS]. Termes techniques : [LISTE VOCABULAIRE].`); >2000 chars → truncated to cap with a truncation flag returned (lengths only)
 - [ ] 3.2 GREEN: implement `format_qwen_context()` (no hotword content ever logged — assert log calls carry lengths only)
 - [ ] 3.3 RED: unit test for a pure `clamp_batch_size(value, default)` helper — None → 4 (QWEN_DEFAULT_BATCH), explicit 12 → 8, explicit 0/negative → 4, explicit 6 → 6
 - [ ] 3.4 GREEN: implement the clamp helper; run `make -f Makefile.harness check`
@@ -42,7 +42,7 @@
 - [ ] 6.3 qwen baseline vs qwen+hotwords: proper-noun recall AND false positives (segments that should not contain the hotword names — no hallucinated insertions)
 - [ ] 6.4 hotwords absent → qwen output bit-identical to the 2026-09-15 baseline run
 - [ ] 6.5 End-to-end: word-level timestamps present; `assign_word_speakers` receives words from the Qwen ForcedAligner; diarized output schema unchanged
-- [ ] 6.6 Peak VRAM logged < 5.5 GB at batch 4; RTFx ~50 on the 4080; record results in the PR
+- [ ] 6.6 Peak VRAM logged < 5.5 GB at batch 4; RTFx ~52 on the 4080; record results in the PR
 
 ## 7. Documentation
 

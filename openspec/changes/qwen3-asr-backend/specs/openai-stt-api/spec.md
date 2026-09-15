@@ -112,3 +112,68 @@ The faster-whisper path SHALL remain bit-identical: for `tiny`, `large-v3`, and 
 
 - **WHEN** the golden set (fixed FR extract + real meeting extract) is replayed for `tiny`, `large-v3`, and `large-v3-turbo`
 - **THEN** all outputs are bit-identical to the pre-change run
+
+## MODIFIED Requirements
+
+### Requirement: Model name mapping
+
+The bridge SHALL map OpenAI model names to Cog `whisper_model` values: `whisper-1` → `large-v3-turbo`, `gpt-4o-transcribe-diarize` → `large-v3-turbo` (with diarization enabled), `large-v3` → `large-v3`, `large-v3-turbo` → `large-v3-turbo`, `tiny` → `tiny`, and additionally `qwen3-asr` → `qwen3-asr`. The whitelist SHALL remain closed: any model not in `MODEL_MAP` returns HTTP 400.
+
+#### Scenario: whisper-1 alias
+
+- **WHEN** client sends `model=whisper-1`
+- **THEN** the Cog prediction input contains `whisper_model: "large-v3-turbo"` and `diarization: false`
+
+#### Scenario: Unsupported model
+
+- **WHEN** client sends `model=invalid-model`
+- **THEN** the bridge returns HTTP 400 with `{"error": {"message": "model 'invalid-model' not supported", "type": "invalid_request_error", "code": null}}`
+
+#### Scenario: qwen3-asr alias
+
+- **WHEN** client sends `model=qwen3-asr` with `ENABLE_QWEN=1` set on the bridge
+- **THEN** the Cog prediction input contains `whisper_model: "qwen3-asr"`
+
+### Requirement: Multipart request parameters
+
+The endpoint SHALL accept the following multipart fields: `file` (required), `model` (required), `language` (optional), `response_format` (optional, default `json`), `temperature` (optional, default `0.0`), `prompt` (optional, mapped to Cog `initial_prompt`), `timestamp_granularities` (optional), and `hotwords` (optional; when `model=qwen3-asr`, routed to the Qwen `context` system message). When the client provides `batch_size`, it SHALL be passed through to the Cog input (no hard-coded default); when absent, the Cog input SHALL omit `batch_size` entirely and the per-model predictor default applies.
+
+#### Scenario: Missing file
+
+- **WHEN** client omits the `file` field or sends an empty file
+- **THEN** the bridge returns HTTP 400 with `{"error": {"message": "file is required", "type": "invalid_request_error", "code": null}}`
+
+#### Scenario: Language parameter forwarded
+
+- **WHEN** client sends `language=fr`
+- **THEN** the bridge submits a Cog prediction with `language: "fr"`
+
+#### Scenario: Timestamp granularities with non-verbose format
+
+- **WHEN** client sends `timestamp_granularities` with `response_format=json` on a non-diarize request
+- **THEN** the bridge processes the request without error and returns a normal json response
+
+#### Scenario: Timestamp granularities with verbose_json
+
+- **WHEN** client sends `response_format=verbose_json` and `timestamp_granularities[]=word`
+- **THEN** the bridge returns verbose_json with a top-level `words` array
+
+#### Scenario: Hotwords forwarded on qwen path
+
+- **WHEN** client sends `model=qwen3-asr` and `hotwords="Backblaze, Supabase"`
+- **THEN** the Cog prediction input contains `hotwords: "Backblaze, Supabase"`
+
+#### Scenario: Hotwords not forwarded on whisper path
+
+- **WHEN** client sends `model=whisper-1` and `hotwords="Backblaze, Supabase"`
+- **THEN** the Cog prediction input contains `hotwords: null` (unchanged behavior)
+
+#### Scenario: Batch_size forwarded when provided
+
+- **WHEN** client sends `model=qwen3-asr` with `batch_size=6`
+- **THEN** the Cog prediction input contains `batch_size: 6`
+
+#### Scenario: Batch_size omitted when not provided
+
+- **WHEN** client sends `model=whisper-1` without `batch_size`
+- **THEN** the Cog prediction input does not contain a `batch_size` field (predictor default applies)

@@ -6,8 +6,9 @@ Live measurements (2026-09-15, RTX 4080, 36-minute meeting, workspace Coder):
 
 | Metric | large-v3-turbo | Qwen3-ASR-1.7B (batch 4) |
 |--------|----------------|--------------------------|
-| RTFx | ~50 | 52 |
-| VRAM peak | ~4–6 GB | 4.99 GB |
+| RTFx | 42 | 52 |
+| VRAM peak | ~3.9 GB | 4.99 GB |
+| Warm model load | (already loaded) | ~4.4 s |
 | Proper nouns with hints | no effect (hotwords) | 4x more correct (Backblaze 3→12, Supabase 0→3) |
 
 Qwen3-ASR is served through the `qwen_asr` pipeline added to whisperx by upstream PR m-bain/whisperX#1401. The fork `charnesp/whisperX` branch `qwen3-asr` (commit `c49b26379f40863767e3c42d9afed5dc4221f54f`) = PR #1401 head + a `context` patch: `QwenAsrPipeline.transcribe` accepts a `context` string and forwards it as a system message with **every** batch (no accumulation, empty string = neutral).
@@ -59,7 +60,13 @@ Unknown models keep the existing 400 `invalid_request_error`. When the `ENABLE_Q
 
 `build_cog_input()` today sends `hotwords: None` unconditionally. Change:
 
-- `model=qwen3-asr`: forward the client `hotwords` string as Cog input `hotwords` (Cog-side branch maps it to the Qwen `context` system message, applied identically to each batch, no accumulation, empty string = neutral). Template = participants + technical vocabulary, exactly the template validated live. Cap ~2000 chars; when truncation occurs, log a warning **with lengths only, never content**.
+- `model=qwen3-asr`: forward the client `hotwords` string as Cog input `hotwords` (Cog-side branch maps it to the Qwen `context` system message, applied identically to each batch, no accumulation, empty string = neutral). Context template (validated live on 2026-09-15):
+
+  ```text
+  Réunion technique chez [ENTREPRISE], [CONTEXTE]. Participants : [LISTE PARTICIPANTS]. Termes techniques : [LISTE VOCABULAIRE].
+  ```
+
+  Participants and technical vocabulary are comma-separated lists. The full measured context string (source of this template, 2026-09-15 measurements) lives in the Coder workspace at `/root/qwen-test/test_hw.py` (`CONTEXT` string) — kept as historical source, not in-repo. Cap ~2000 chars; when truncation occurs, log a warning **with lengths only, never content**.
 - Other models: `hotwords` flows to faster-whisper `asr_options["hotwords"]` as today (measured: no effect, but semantics unchanged — whisper path untouched).
 - `hotwords` absent/empty → qwen behaves bit-identically to the 15/09 baseline (acceptance criterion).
 
@@ -87,7 +94,7 @@ On the qwen path, skip the whisper `detect_language` loop entirely (Qwen perform
 ```text
 whisperx @ git+https://github.com/charnesp/whisperX@c49b26379f40863767e3c42d9afed5dc4221f54f
 qwen-asr==0.0.6 --no-deps
-transformers==4.57.6   # already in prod
+transformers==4.57.6   # version measured in the prod container (pip freeze, 2026-09-15); transitive dep of whisperx, not pinned in requirements.txt — explicit pin adds it to the lockfile
 soundfile
 librosa
 ```
