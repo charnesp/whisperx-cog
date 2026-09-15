@@ -24,6 +24,35 @@ build:
     - wget -q -O /models/faster-whisper-large-v3-turbo/vocabulary.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/vocabulary.json
     - test -s /models/faster-whisper-large-v3-turbo/model.bin
     - ls -lh /models/faster-whisper-large-v3-turbo/model.bin
+    # Bake Qwen3-ASR + Qwen3-ForcedAligner to /models BEFORE Cog COPY . /src.
+    # Revisions pinned in models.lock (retrieved from the HF Hub API, field
+    # "sha"). Runtime runs with HF_HUB_OFFLINE=1: predict.py fails fast if the
+    # baked weights are missing (no silent HF download at request time).
+    - mkdir -p /models/qwen3-asr-1.7b /models/qwen3-forced-aligner-0.6b
+    - wget -q -O /models/qwen3-asr-1.7b/config.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/config.json
+    - wget -q -O /models/qwen3-asr-1.7b/generation_config.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/generation_config.json
+    - wget -q -O /models/qwen3-asr-1.7b/preprocessor_config.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/preprocessor_config.json
+    - wget -q -O /models/qwen3-asr-1.7b/tokenizer_config.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/tokenizer_config.json
+    - wget -q -O /models/qwen3-asr-1.7b/vocab.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/vocab.json
+    - wget -q -O /models/qwen3-asr-1.7b/merges.txt https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/merges.txt
+    - wget -q -O /models/qwen3-asr-1.7b/chat_template.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/chat_template.json
+    - wget -q -O /models/qwen3-asr-1.7b/model.safetensors.index.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model.safetensors.index.json
+    - wget -q -O /models/qwen3-asr-1.7b/model-00001-of-00002.safetensors https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00001-of-00002.safetensors
+    - wget -q -O /models/qwen3-asr-1.7b/model-00002-of-00002.safetensors https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00002-of-00002.safetensors
+    - test -s /models/qwen3-asr-1.7b/model-00001-of-00002.safetensors
+    - test -s /models/qwen3-asr-1.7b/model-00002-of-00002.safetensors
+    - ls -lh /models/qwen3-asr-1.7b/model-00001-of-00002.safetensors /models/qwen3-asr-1.7b/model-00002-of-00002.safetensors
+    - wget -q -O /models/qwen3-forced-aligner-0.6b/config.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/config.json
+    - wget -q -O /models/qwen3-forced-aligner-0.6b/generation_config.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/generation_config.json
+    - wget -q -O /models/qwen3-forced-aligner-0.6b/preprocessor_config.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/preprocessor_config.json
+    - wget -q -O /models/qwen3-forced-aligner-0.6b/tokenizer_config.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/tokenizer_config.json
+    - wget -q -O /models/qwen3-forced-aligner-0.6b/vocab.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/vocab.json
+    - wget -q -O /models/qwen3-forced-aligner-0.6b/merges.txt https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/merges.txt
+    - wget -q -O /models/qwen3-forced-aligner-0.6b/chat_template.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/chat_template.json
+    - wget -q -O /models/qwen3-forced-aligner-0.6b/model.safetensors https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/model.safetensors
+    - test -s /models/qwen3-forced-aligner-0.6b/model.safetensors
+    - ls -lh /models/qwen3-forced-aligner-0.6b/model.safetensors
 environment:
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
+  - "HF_HUB_OFFLINE=1"
 predict: "predict.py:Predictor"
