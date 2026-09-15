@@ -34,6 +34,8 @@ device = "cuda"
 # ---------------------------------------------------------------------------
 # Qwen3-ASR backend (qwen3-asr) — helpers and constants (GPU-free, unit-tested)
 # ---------------------------------------------------------------------------
+WHISPER_DEFAULT_BATCH = 64  # faster-whisper path default (pre-change behavior)
+
 QWEN_MODEL_NAME = "qwen3-asr"
 QWEN_DEFAULT_BATCH = 4  # measured OOM at larger batches on the shared 16 GB GPU
 QWEN_MAX_BATCH = 8
@@ -80,31 +82,67 @@ def assert_qwen_enabled() -> None:
 
 
 def resolve_qwen_batch_size(batch_size, provided: bool = True) -> int:
-    """Qwen batch resolution: default 4 when absent, explicit values clamped [1, 8]."""
+    """Qwen batch resolution: default 4 when absent, explicit values clamped [1, 8].
+
+    0/negative values are corrected to the default (not clamped to 1): a
+    non-positive batch is a client mistake, not an intentional single-threaded
+    run. A clamp logs old/new lengths only (ints, no PII).
+    """
     if not provided or batch_size is None:
         return QWEN_DEFAULT_BATCH
     try:
         value = int(batch_size)
     except (TypeError, ValueError):
         return QWEN_DEFAULT_BATCH
-    return max(1, min(QWEN_MAX_BATCH, value))
+    if value <= 0:
+        logger.warning(
+            "Qwen batch_size %d invalid (non-positive), using default %d",
+            value,
+            QWEN_DEFAULT_BATCH,
+        )
+        return QWEN_DEFAULT_BATCH
+    clamped = max(1, min(QWEN_MAX_BATCH, value))
+    if clamped != value:
+        logger.warning(
+            "Qwen batch_size clamped: %d -> %d (allowed range 1-%d)",
+            value,
+            clamped,
+            QWEN_MAX_BATCH,
+        )
+    return clamped
 
 
-def qwen_context_from_hotwords(hotwords) -> tuple[str, bool]:
-    """Map client hotwords to the Qwen context string.
+def format_qwen_context(hotwords) -> tuple[str, bool]:
+    """Assemble the Qwen context string from client hotwords.
+
+    Wraps the hotwords in the meeting-context template validated live
+    (design.md §2): 'Réunion technique chez [ENTREPRISE], [CONTEXTE].
+    Participants : [LISTE PARTICIPANTS]. Termes techniques : [LISTE VOCABULAIRE].'
+
+    Known deviation from design.md §2: the OpenAI multipart contract has no
+    company/participants fields, so [ENTREPRISE]/[CONTEXTE]/[LISTE PARTICIPANTS]
+    cannot be filled. The simplified template keeps only the technical-vocabulary
+    section that hotwords can populate. Documented as a deviation in tasks.md.
 
     Returns (context, truncated). Empty/absent hotwords -> empty string
     (neutral for Qwen). Content is never logged, only lengths.
     """
-    context = hotwords.strip() if isinstance(hotwords, str) else ""
+    words = hotwords.strip() if isinstance(hotwords, str) else ""
+    if not words:
+        return "", False
+    context = (
+        "Contexte technique de la réunion. "
+        f"Termes, entités et noms propres attendus : {words}."
+    )
     if len(context) > QWEN_CONTEXT_CAP:
+        truncated = context[:QWEN_CONTEXT_CAP]
         # Lengths only — hotword content is never logged (client proper nouns).
         logger.warning(
             "Qwen context truncated: %d -> %d chars",
             len(context),
-            QWEN_CONTEXT_CAP,
+            len(truncated),
         )
-        return context[:QWEN_CONTEXT_CAP], True
+        return truncated, True
     return context, False
 
 
@@ -422,7 +460,7 @@ class Predictor(BasePredictor):
             start_time = time.time_ns() / 1e9
 
             if is_qwen:
-                context, _truncated = qwen_context_from_hotwords(hotwords)
+                context, _truncated = format_qwen_context(hotwords)
                 effective_batch = resolve_qwen_batch_size(batch_size, provided=batch_size is not None)
                 result = model.transcribe(
                     audio,
@@ -430,7 +468,16 @@ class Predictor(BasePredictor):
                     context=context,
                 )
             else:
-                result = model.transcribe(audio, batch_size=batch_size)
+                # Whisper path: batch_size None must resolve to the historical
+                # faster-whisper default 64. The E3 bridge change (batch_size
+                # only when provided) exposed the fork's `batch_size or
+                # self._batch_size` fallback where None falls through to the
+                # transformers pipeline default (effective batch 1) — pass 64
+                # explicitly to keep the pre-change behavior.
+                effective_whisper_batch = (
+                    WHISPER_DEFAULT_BATCH if batch_size is None else batch_size
+                )
+                result = model.transcribe(audio, batch_size=effective_whisper_batch)
             detected_language = result["language"]
 
             if debug:
