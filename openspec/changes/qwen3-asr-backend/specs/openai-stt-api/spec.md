@@ -136,7 +136,7 @@ The bridge SHALL map OpenAI model names to Cog `whisper_model` values: `whisper-
 
 ### Requirement: Multipart request parameters
 
-The endpoint SHALL accept the following multipart fields: `file` (required), `model` (required), `language` (optional), `response_format` (optional, default `json`), `temperature` (optional, default `0.0`), `prompt` (optional, mapped to Cog `initial_prompt`), `timestamp_granularities` (optional), and `hotwords` (optional; when `model=qwen3-asr`, routed to the Qwen `context` system message). When the client provides `batch_size`, it SHALL be passed through to the Cog input (no hard-coded default); when absent, the Cog input SHALL omit `batch_size` entirely and the per-model predictor default applies.
+The endpoint SHALL accept the following multipart fields: `file` (required), `model` (required), `language` (optional), `response_format` (optional, default `json`), `temperature` (optional, default `0.0`), `prompt` (optional, mapped to Cog `initial_prompt`), `timestamp_granularities` (optional), `chunking_strategy` (optional, diarize path only), `known_speaker_names` (optional, diarize path only), and `hotwords` (optional; when `model=qwen3-asr`, routed to the Qwen `context` system message). When the client provides `batch_size`, it SHALL be passed through to the Cog input (no hard-coded default); when absent, the Cog input SHALL omit `batch_size` entirely and the per-model predictor default applies.
 
 #### Scenario: Missing file
 
