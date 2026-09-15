@@ -52,7 +52,7 @@ MODEL_MAP = {
 }
 ```
 
-Unknown models keep the existing 400 `invalid_request_error`. When the `ENABLE_QWEN` env var is disabled/absent, `qwen3-asr` is rejected with the same 400 envelope (message: feature disabled) — no redeploy needed to turn the backend off.
+Unknown models keep the existing 400 `invalid_request_error`. The `ENABLE_QWEN` kill-switch defaults to enabled: when the env var is unset, `qwen3-asr` is accepted; only explicitly falsy values (`0`, `false`, empty, `no`, `off`) reject it with the same 400 envelope (message: feature disabled) — no redeploy needed to turn the backend off.
 
 **Rationale:** the parameter surface is unchanged for existing clients; the model name itself is the canary.
 

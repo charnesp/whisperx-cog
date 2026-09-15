@@ -2,17 +2,22 @@
 
 ### Requirement: Qwen3-ASR model alias
 
-The bridge SHALL accept `model=qwen3-asr` on `POST /v1/audio/transcriptions` and map it to Cog `whisper_model: "qwen3-asr"`. The model whitelist SHALL remain closed: any model not in `MODEL_MAP` returns HTTP 400. When the `ENABLE_QWEN` environment variable is unset or empty, `model=qwen3-asr` SHALL be rejected with HTTP 400 and a feature-disabled message, without requiring a redeploy.
+The bridge SHALL accept `model=qwen3-asr` on `POST /v1/audio/transcriptions` and map it to Cog `whisper_model: "qwen3-asr"`. The model whitelist SHALL remain closed: any model not in `MODEL_MAP` returns HTTP 400. When `ENABLE_QWEN` is unset, `model=qwen3-asr` SHALL be accepted (kill-switch defaults to enabled). The backend SHALL be rejected with HTTP 400 and a feature-disabled message only when `ENABLE_QWEN` is explicitly set to a falsy value (`0`, `false`, empty, `no`, `off`), without requiring a redeploy.
 
 #### Scenario: Qwen model accepted
 
 - **WHEN** client sends `model=qwen3-asr` with a valid file and `ENABLE_QWEN=1` is set on the bridge
 - **THEN** the Cog prediction input contains `whisper_model: "qwen3-asr"`
 
-#### Scenario: Qwen model rejected when kill-switch is off
+#### Scenario: Qwen model rejected when kill-switch is explicitly disabled
 
-- **WHEN** client sends `model=qwen3-asr` and `ENABLE_QWEN` is unset or empty
+- **WHEN** client sends `model=qwen3-asr` and `ENABLE_QWEN` is explicitly set to a falsy value (`0`, `false`, empty, `no`, `off`)
 - **THEN** the bridge returns HTTP 400 with `invalid_request_error` and a message indicating the qwen backend is disabled
+
+#### Scenario: Qwen model accepted when kill-switch is unset
+
+- **WHEN** client sends `model=qwen3-asr` with a valid file and `ENABLE_QWEN` is unset
+- **THEN** the Cog prediction input contains `whisper_model: "qwen3-asr"` (kill-switch defaults to enabled)
 
 #### Scenario: Unknown model still rejected
 
