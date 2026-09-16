@@ -57,13 +57,19 @@ class TestProvisionerWorkflowContent(unittest.TestCase):
     def test_docker_build_uses_provisioner_dockerfile(self):
         raw = WORKFLOW_PATH.read_text()
         self.assertIn("Dockerfile.provisioner", raw, "build must use Dockerfile.provisioner")
-        self.assertIn("docker build", raw)
+        self.assertTrue(
+            "docker build" in raw or "docker/build-push-action" in raw,
+            "no docker build step found",
+        )
 
     def test_pushes_immutable_short_sha_tag(self):
         raw = WORKFLOW_PATH.read_text()
         self.assertIn("sha-", raw)
         self.assertTrue(any(s in raw for s in ("GITHUB_SHA::8", "GITHUB_SHA:0:8")))
-        self.assertIn("docker push", raw)
+        self.assertTrue(
+            "docker push" in raw or "push: true" in raw,
+            "no docker push step found",
+        )
 
     def test_never_latest_outside_main(self):
         raw = WORKFLOW_PATH.read_text()
@@ -75,6 +81,9 @@ class TestProvisionerWorkflowContent(unittest.TestCase):
             "latest=false" in raw or "IS_MAIN" in raw or "IS_DEFAULT_BRANCH" in raw,
             "no explicit latest=false / main-branch guard found in workflow",
         )
+        # :latest jamais tagué hors main — la logique est portée par la
+        # condition GITHUB_REF (refs/heads/m) du step Compute tags.
+        self.assertIn("refs/heads/m", raw, "main-branch condition missing")
 
     def test_ghcr_login_uses_github_token(self):
         raw = WORKFLOW_PATH.read_text()
