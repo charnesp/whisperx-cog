@@ -22,7 +22,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -815,6 +817,378 @@ class TestVramPerRun(unittest.TestCase):
         evaluation = self.gs.evaluate_report(report)
         self.assertFalse(evaluation["all_pass"])
         self.assertTrue(any("vram" in f.lower() for f in evaluation["failures"]))
+
+
+# ---------------------------------------------------------------------------
+# RED tests — E4-EXEC-FIX cycle (3 defects observed on the real GPU run:
+# batch_size not passed run_golden_set -> run_single, no VRAM free between
+# runs, JSON report only written at the very end). Written WITHOUT the
+# implementation: run_golden_set has no batch_size / free_fn / partial-write
+# params yet, so every assertion below fails (observed RED, cited in the
+# commit message).
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestBatchSizePassthrough(unittest.TestCase):
+    """FIX A (🔴): run_golden_set must accept and pass batch_size down to
+    run_single — per-run type defaults (turbo 16, qwen 4) and per-model
+    overrides. On the real GPU the missing passthrough froze turbo at 64 ->
+    guaranteed OOM when free VRAM < 6 GiB."""
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+        self.tmpdir = tempfile.mkdtemp(dir="/opt/data/tmp")
+        self.output = str(Path(self.tmpdir) / "report.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _stub_run_single(self, recorded):
+        """Replace module run_single with a spy that records batch_size."""
+
+        def fake_run_single(run_spec, **kwargs):
+            recorded.append({"model": run_spec["whisper_model"], "batch_size": kwargs.get("batch_size")})
+            return {
+                "whisper_model": run_spec["whisper_model"],
+                "hotwords": run_spec.get("hotwords"),
+                "transcript": "backblaze bucket",
+                "transcript_hash": "a" * 64,
+                "segments_hash": "b" * 64,
+                "language": "fr",
+                "batch_size": kwargs.get("batch_size"),
+                "duration_s": 1.0,
+                "vram_peak_gb": 1.0,
+                "word_timestamps_present": True,
+                "words_carry_speakers": True,
+                "segments": [],
+                "ok": True,
+            }
+
+        self.gs.run_single = fake_run_single
+
+    def _gpu_free_kwargs(self):
+        return dict(
+            load_audio_fn=lambda p: [0.0],
+            model_factory=lambda name: object(),
+            clock=lambda: 0.0,
+            vram_peak_fn=lambda: 1.0,
+            vram_reset_fn=lambda: None,
+            align_fn=lambda audio, result: result,
+            diarize_fn=lambda audio, result: result,
+            audio_duration_fn=lambda p: 30.0,
+        )
+
+    def test_run_golden_set_accepts_batch_size_and_passes_it_to_run_single(self):
+        recorded = []
+        self._stub_run_single(recorded)
+        self.gs.run_golden_set(audio_path="x.ogg", output_path=self.output, batch_size=8, **self._gpu_free_kwargs())
+        self.assertEqual(len(recorded), 3)
+        for entry in recorded:
+            self.assertEqual(
+                entry["batch_size"],
+                8,
+                f"run {entry['model']} must receive the caller's batch_size",
+            )
+
+    def test_run_golden_set_default_per_model_batch_turbo_16_qwen_4(self):
+        recorded = []
+        self._stub_run_single(recorded)
+        self.gs.run_golden_set(audio_path="x.ogg", output_path=self.output, **self._gpu_free_kwargs())
+        by_model = {e["model"]: e["batch_size"] for e in recorded}
+        self.assertEqual(by_model.get("large-v3-turbo"), 16, "turbo default batch must be 16, not 64")
+        self.assertEqual(by_model.get("qwen3-asr"), 4, "qwen default batch must be 4")
+
+    def test_run_golden_set_per_model_batch_override(self):
+        recorded = []
+        self._stub_run_single(recorded)
+        self.gs.run_golden_set(
+            audio_path="x.ogg",
+            output_path=self.output,
+            per_model_batch={"large-v3-turbo": 32, "qwen3-asr": 2},
+            **self._gpu_free_kwargs(),
+        )
+        by_model = {e["model"]: e["batch_size"] for e in recorded}
+        self.assertEqual(by_model.get("large-v3-turbo"), 32)
+        self.assertEqual(by_model.get("qwen3-asr"), 2)
+
+    def test_resolve_batch_size_helper(self):
+        # pure helper: caller batch_size wins, then per-model table, then 16/4
+        self.assertEqual(self.gs.resolve_batch_size("large-v3-turbo", 8), 8)
+        self.assertEqual(self.gs.resolve_batch_size("qwen3-asr", 8), 8)
+        self.assertEqual(self.gs.resolve_batch_size("large-v3-turbo"), 16)
+        self.assertEqual(self.gs.resolve_batch_size("qwen3-asr"), 4)
+        self.assertEqual(
+            self.gs.resolve_batch_size("large-v3-turbo", per_model_batch={"large-v3-turbo": 32}),
+            32,
+        )
+        self.assertEqual(
+            self.gs.resolve_batch_size("qwen3-asr", per_model_batch={"large-v3-turbo": 32}),
+            4,
+        )
+
+    def test_per_model_default_batch_constants(self):
+        self.assertEqual(self.gs.PER_MODEL_DEFAULT_BATCH.get("large-v3-turbo"), 16)
+        self.assertEqual(self.gs.PER_MODEL_DEFAULT_BATCH.get("qwen3-asr"), 4)
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestFreeGpuBetweenRuns(unittest.TestCase):
+    """FIX B (🔴): the harness must release VRAM between runs — injectable
+    free_fn called after EACH run, once the run result has been extracted
+    and stored. On the real GPU the accumulated turbo+qwen+aligner+pyannote
+    models in a single process OOMed pyannote wespeaker (312 MiB) and the
+    aligner (93/93 segments unaligned)."""
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+        self.tmpdir = tempfile.mkdtemp(dir="/opt/data/tmp")
+        self.output = str(Path(self.tmpdir) / "report.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _run_with_free_spy(self, free_events):
+        def fake_run_single(run_spec, **kwargs):
+            free_events.append(("run_end", run_spec["whisper_model"]))
+            return {"whisper_model": run_spec["whisper_model"], "ok": True, "transcript": "", "segments": []}
+
+        self.gs.run_single = fake_run_single
+        calls = {"n": 0}
+
+        def free_spy():
+            calls["n"] += 1
+            free_events.append(("free", calls["n"]))
+
+        self.gs.run_golden_set(
+            audio_path="x.ogg",
+            output_path=self.output,
+            load_audio_fn=lambda p: [0.0],
+            model_factory=lambda name: object(),
+            clock=lambda: 0.0,
+            vram_peak_fn=lambda: 1.0,
+            vram_reset_fn=lambda: None,
+            align_fn=lambda audio, result: result,
+            diarize_fn=lambda audio, result: result,
+            audio_duration_fn=lambda p: 30.0,
+            free_fn=free_spy,
+        )
+        return calls
+
+    def test_free_fn_called_once_after_each_run(self):
+        free_events = []
+        calls = self._run_with_free_spy(free_events)
+        self.assertEqual(calls["n"], 3, "free_fn must be called after each of the 3 runs")
+
+    def test_free_fn_called_after_result_extraction(self):
+        # interleaving: run N ends, THEN free — the result is stored before
+        # the VRAM release, never freed before its extraction
+        free_events = []
+        self._run_with_free_spy(free_events)
+        run_ends = [i for i, e in enumerate(free_events) if e[0] == "run_end"]
+        frees = [i for i, e in enumerate(free_events) if e[0] == "free"]
+        self.assertEqual(len(run_ends), 3)
+        self.assertEqual(len(frees), 3)
+        for idx in range(3):
+            self.assertLess(
+                run_ends[idx],
+                frees[idx],
+                "free_fn must run AFTER the run result is extracted/stored",
+            )
+
+    def test_free_gpu_real_uses_gc_and_empty_cache(self):
+        import inspect
+
+        self.assertTrue(hasattr(self.gs, "free_gpu_real"))
+        src = inspect.getsource(self.gs.free_gpu_real)
+        self.assertIn("gc.collect", src)
+        self.assertIn("empty_cache", src)
+        # and run_golden_set defaults free_fn to it
+        src_flow = inspect.getsource(self.gs.run_golden_set)
+        self.assertIn("free_gpu_real", src_flow)
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestPartialReportAfterEachRun(unittest.TestCase):
+    """FIX C (🔴): a partial report must be written to --output after EACH
+    run (completed runs so far + the failed run's error). On the real GPU an
+    OOM on run 2/3 lost ALL metrics (zero artefact, no hashes)."""
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+        self.tmpdir = tempfile.mkdtemp(dir="/opt/data/tmp")
+        self.output = str(Path(self.tmpdir) / "report.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _kwargs(self):
+        return dict(
+            load_audio_fn=lambda p: [0.0],
+            model_factory=lambda name: object(),
+            clock=lambda: 0.0,
+            vram_peak_fn=lambda: 1.0,
+            vram_reset_fn=lambda: None,
+            align_fn=lambda audio, result: result,
+            diarize_fn=lambda audio, result: result,
+            audio_duration_fn=lambda p: 30.0,
+            free_fn=lambda: None,
+        )
+
+    @staticmethod
+    def _ok_run(run_spec):
+        return {
+            "whisper_model": run_spec["whisper_model"],
+            "hotwords": run_spec.get("hotwords"),
+            "transcript": "backblaze bucket",
+            "transcript_hash": "a" * 64,
+            "segments_hash": "b" * 64,
+            "language": "fr",
+            "batch_size": 4,
+            "duration_s": 1.0,
+            "vram_peak_gb": 1.0,
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "segments": [],
+            "ok": True,
+        }
+
+    def test_partial_snapshot_visible_after_each_completed_run(self):
+        seen_at_run3 = {}
+
+        def fake_run_single(run_spec, **kwargs):
+            if run_spec["whisper_model"] == "qwen3-asr" and "hotwords" in run_spec and run_spec["hotwords"]:
+                # 3rd call: the file must already hold the 2 previous runs
+                seen_at_run3["content"] = Path(self.output).read_text(encoding="utf-8") if Path(self.output).exists() else None
+            return self._ok_run(run_spec)
+
+        self.gs.run_single = fake_run_single
+        self.gs.run_golden_set(audio_path="x.ogg", output_path=self.output, **self._kwargs())
+        self.assertIsNotNone(seen_at_run3["content"], "a partial report must exist BEFORE the last run finishes")
+        partial = json.loads(seen_at_run3["content"])
+        self.assertTrue(partial.get("partial"))
+        self.assertIn("turbo_baseline", partial.get("runs") or {})
+        self.assertIn("qwen_baseline", partial.get("runs") or {})
+        self.assertNotIn("qwen_hotwords", partial.get("runs") or {})
+
+    def test_failed_run_recorded_and_report_still_written(self):
+        def fake_run_single(run_spec, **kwargs):
+            if run_spec["whisper_model"] == "qwen3-asr" and not run_spec.get("hotwords"):
+                raise RuntimeError("CUDA out of memory. Tried to allocate 312.00 MiB")
+            return self._ok_run(run_spec)
+
+        self.gs.run_single = fake_run_single
+        report, evaluation = self.gs.run_golden_set(audio_path="x.ogg", output_path=self.output, **self._kwargs())
+        # the failed run is documented, not lost
+        self.assertIn("CUDA out of memory", str(report["runs"]["qwen_baseline"].get("error")))
+        self.assertFalse(report["runs"]["qwen_baseline"].get("ok"))
+        # completed runs survive
+        self.assertTrue(report["runs"]["turbo_baseline"]["ok"])
+        self.assertTrue(report["runs"]["qwen_hotwords"]["ok"])
+        # and the file exists with the failure documented
+        on_disk = json.loads(Path(self.output).read_text(encoding="utf-8"))
+        self.assertIn("CUDA out of memory", str(on_disk["runs"]["qwen_baseline"].get("error")))
+
+    def test_partial_snapshot_written_even_when_run_fails_midway(self):
+        def fake_run_single(run_spec, **kwargs):
+            if run_spec["whisper_model"] == "qwen3-asr" and not run_spec.get("hotwords"):
+                raise RuntimeError("OOM")
+            return self._ok_run(run_spec)
+
+        observed = {}
+
+        def spy_run(run_spec, **kwargs):
+            if run_spec["whisper_model"] == "qwen3-asr" and run_spec.get("hotwords"):
+                observed["before_last"] = Path(self.output).read_text(encoding="utf-8") if Path(self.output).exists() else None
+            return fake_run_single(run_spec, **kwargs)
+
+        self.gs.run_single = spy_run
+        self.gs.run_golden_set(audio_path="x.ogg", output_path=self.output, **self._kwargs())
+        self.assertIsNotNone(observed["before_last"], "partial snapshot must be on disk even after a mid-run OOM")
+        partial = json.loads(observed["before_last"])
+        self.assertTrue(partial.get("partial"))
+        self.assertIn("turbo_baseline", partial.get("runs") or {})
+        failed = partial.get("failed_runs") or {}
+        self.assertIn("qwen_baseline", failed, "the failed run error must appear in the partial snapshot")
+
+    def test_evaluate_report_tolerates_partial_report(self):
+        # partial report (one run failed with an error entry): documented
+        # failure, no crash
+        report = {
+            "runs": {
+                "turbo_baseline": {"transcript_hash": "a" * 64, "ok": True},
+                "qwen_baseline": {"error": "CUDA out of memory", "ok": False},
+                "qwen_hotwords": {"transcript_hash": "c" * 64, "ok": True},
+            },
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 4.99,
+            "rtfx": 52.0,
+            "false_positives": [],
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertFalse(evaluation["all_pass"])
+        self.assertTrue(any("qwen_baseline" in f for f in evaluation["failures"]))
+
+    def test_write_partial_snapshot_helper(self):
+        runs = {"turbo_baseline": self._ok_run({"whisper_model": "large-v3-turbo", "hotwords": None})}
+        self.gs._write_partial_snapshot(self.output, runs=runs, failed_runs={"qwen_baseline": "OOM"})
+        data = json.loads(Path(self.output).read_text(encoding="utf-8"))
+        self.assertTrue(data["partial"])
+        self.assertIn("turbo_baseline", data["runs"])
+        self.assertEqual(data["failed_runs"], {"qwen_baseline": "OOM"})
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestCliBatchOptions(unittest.TestCase):
+    """FIX D (🔴): CLI options --batch-size and --per-model-batch must reach
+    run_golden_set."""
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    def test_main_passes_batch_size_and_per_model_batch(self):
+        captured = {}
+
+        def fake_run_golden_set(**kwargs):
+            captured.update(kwargs)
+            return {}, {"all_pass": True, "failures": []}
+
+        self.gs.run_golden_set = fake_run_golden_set
+        exit_code = self.gs.main(
+            [
+                "--meeting-audio", "x.ogg",
+                "--output", "/opt/data/tmp/cli_report.json",
+                "--batch-size", "6",
+                "--per-model-batch", '{"large-v3-turbo": 16, "qwen3-asr": 4}',
+            ]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(captured.get("batch_size"), 6)
+        self.assertEqual(captured.get("per_model_batch"), {"large-v3-turbo": 16, "qwen3-asr": 4})
+
+    def test_main_defaults_are_none(self):
+        captured = {}
+
+        def fake_run_golden_set(**kwargs):
+            captured.update(kwargs)
+            return {}, {"all_pass": True, "failures": []}
+
+        self.gs.run_golden_set = fake_run_golden_set
+        self.gs.main(["--meeting-audio", "x.ogg", "--output", "/opt/data/tmp/cli_report.json"])
+        self.assertIsNone(captured.get("batch_size"))
+        self.assertIsNone(captured.get("per_model_batch"))
+
+    def test_main_invalid_per_model_batch_json_fails_cleanly(self):
+        self.gs.run_golden_set = lambda **kwargs: ({}, {"all_pass": True, "failures": []})
+        exit_code = self.gs.main(
+            [
+                "--meeting-audio", "x.ogg",
+                "--output", "/opt/data/tmp/cli_report.json",
+                "--per-model-batch", "not-json",
+            ]
+        )
+        self.assertEqual(exit_code, 2)
 
 
 if __name__ == "__main__":
