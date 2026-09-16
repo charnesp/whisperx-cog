@@ -33,9 +33,16 @@ models:
   - repo: Systran/faster-whisper-tiny
     revision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     expected_files: [config.json, model.bin]
+    sizes:
+      config.json: 10
+      model.bin: 100
   - repo: Qwen/Qwen3-ASR-1.7B
     revision: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     expected_files: [config.json, model-00001-of-00002.safetensors, model-00002-of-00002.safetensors]
+    sizes:
+      config.json: 10
+      model-00001-of-00002.safetensors: 100
+      model-00002-of-00002.safetensors: 200
 """
 
 SECRET_VALUE = "hf_SUPERSECRETtokenValue123456"
@@ -159,11 +166,11 @@ class TestExpectedPaths(unittest.TestCase):
             paths = models_lock.expected_paths(Path(tmp) / "models", lock)
         self.assertEqual(
             paths["tiny"],
-            str(Path(tmp) / "models" / "tiny" / "a" * 40),
+            str(Path(tmp) / "models" / "tiny" / ("a" * 40)),
         )
         self.assertEqual(
             paths["qwen3-asr-1.7b"],
-            str(Path(tmp) / "models" / "qwen3-asr-1.7b" / "b" * 40),
+            str(Path(tmp) / "models" / "qwen3-asr-1.7b" / ("b" * 40)),
         )
 
     def test_expected_paths_covers_5_models_of_real_lock(self):
@@ -181,7 +188,10 @@ class TestFastValidate(unittest.TestCase):
         import models_lock
 
         if lock is None:
-            lock = models_lock.parse_lock(lock_text)
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as tmp:
+                lock = models_lock.parse_lock(_fake_lock_path(Path(tmp), lock_text))
         return _capture(models_lock.fast_validate, root, lock)
 
     def test_passes_when_all_provisioned(self):
@@ -265,7 +275,7 @@ class TestFastValidate(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "models"
-            d = root / "tiny" / "a" * 40
+            d = root / "tiny" / ("a" * 40)
             d.mkdir(parents=True)
             (d / "model.bin").write_bytes(b"w" * 100)
             lock = models_lock.parse_lock(_fake_lock_path(Path(tmp)))
@@ -282,7 +292,7 @@ class TestFastValidate(unittest.TestCase):
             root = Path(tmp) / "models"
             root.mkdir()
             lock = models_lock.parse_lock(_fake_lock_path(Path(tmp)))
-            d = root / "tiny" / "a" * 40
+            d = root / "tiny" / ("a" * 40)
             d.mkdir(parents=True)
             (d / "config.json").write_bytes(b"w" * 10)
             (d / "model.bin").write_bytes(b"w" * 999)  # != 100
@@ -297,8 +307,17 @@ class TestFastValidate(unittest.TestCase):
 
         import models_lock
 
+        text = (
+            "models:\n"
+            "  - repo: Systran/faster-whisper-tiny\n"
+            "    revision: " + "a" * 40 + "\n"
+            "    expected_files:\n"
+            "      - model.bin\n"
+            "    sizes:\n"
+            "      model.bin: 100\n"
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            lock = models_lock.parse_lock(_fake_lock_path(Path(tmp)))
+            lock = models_lock.parse_lock(_fake_lock_path(Path(tmp), text))
             sizes = models_lock.expected_sizes(lock)
         self.assertEqual(sizes[("tiny", "model.bin")], 100)
 
@@ -318,7 +337,7 @@ class TestFastValidate(unittest.TestCase):
             root = Path(tmp) / "models"
             root.mkdir()
             lock = models_lock.parse_lock(_fake_lock_path(Path(tmp), text))
-            d = root / "tiny" / "a" * 40
+            d = root / "tiny" / ("a" * 40)
             d.mkdir(parents=True)
             (d / "config.json").write_bytes(b"w")
             (d / "model.bin").write_bytes(b"w")
@@ -342,7 +361,8 @@ class TestFastValidate(unittest.TestCase):
         import models_lock
 
         raised, out = _capture(models_lock.boot_validate, "/models", LOCK_SRC)
-        self.assertIn("E_MODEL_NOT_PROVISIONED", out)
+        text = f"{raised}\n{out}"
+        self.assertIn("E_MODEL_NOT_PROVISIONED", text)
 
 
 class TestSecretLeakGuard(unittest.TestCase):
@@ -388,7 +408,7 @@ class TestSetupIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "models"
             root.mkdir()
-            lock = models_lock.parse_lock(_fake_lock_path(Path(tmp)))
+            models_lock.parse_lock(_fake_lock_path(Path(tmp)))
             _build_baked(
                 root,
                 "tiny",
@@ -418,7 +438,7 @@ class TestSetupIntegration(unittest.TestCase):
                 calls.append("vad")
                 return None
 
-            with self.mock_env(models_root=str(root), lock_path=_fake_lock_path(Path(tmp))):
+            with self._mock_env(models_root=str(root), lock_path=_fake_lock_path(Path(tmp))):
                 self.predict.resolve_vad_source_path = fake_vad
                 self.predict.validate_boot_models = fake_validate
                 try:
@@ -447,13 +467,11 @@ class TestSetupIntegration(unittest.TestCase):
     def test_setup_fails_fast_when_not_provisioned(self):
         import tempfile
 
-        import models_lock
-
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "models"
             root.mkdir()
             predictor = self.predict.Predictor()
-            with self.mock_env(models_root=str(root), lock_path=_fake_lock_path(Path(tmp))):
+            with self._mock_env(models_root=str(root), lock_path=_fake_lock_path(Path(tmp))):
                 with self.assertRaises(Exception) as ctx:
                     predictor.setup()
             self.assertIn("E_MODEL_NOT_PROVISIONED", str(ctx.exception))
