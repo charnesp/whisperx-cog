@@ -39,6 +39,9 @@ jobs:
         # refs/heads/main / refs/heads/master — jamais de prefix-match.
         run: |
           eval "$(IMAGE="ghcr.io/charnesp/whisperx-provisioner" bash scripts/compute_image_tags.sh)"
+          # Persister les variables aux steps suivants (eval ne survit pas au step)
+          printf 'IMAGE=%s\nTAGS=%s\nIS_DEFAULT_BRANCH=%s\nSHORT_SHA=%s\n' \
+            "$IMAGE" "$TAGS" "$IS_DEFAULT_BRANCH" "$SHORT_SHA" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

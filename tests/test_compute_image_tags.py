@@ -35,7 +35,11 @@ SHA = "deadbeefdeadbeef"
 
 
 def _run_script(script_path: Path, ref: str, ref_name: str = "") -> dict:
-    """Exécute le script de tags avec l'environnement fourni, parse la sortie."""
+    """Exécute le script et dés-quote ses sorties (%q) comme le font les workflows.
+
+    Le script sort des lignes KEY=%q (quoté bash pour eval). On évalue sa
+    sortie dans un bash puis on imprime les valeurs brutes, une par ligne.
+    """
     env = dict(os.environ)
     env.update(
         IMAGE=IMAGE,
@@ -44,8 +48,14 @@ def _run_script(script_path: Path, ref: str, ref_name: str = "") -> dict:
         GITHUB_SHA=SHA,
     )
     env.pop("GITHUB_ENV", None)
+    inner = (
+        f'eval "$(IMAGE="$IMAGE" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" '
+        f'GITHUB_REF_NAME="$GITHUB_REF_NAME" bash {script_path})"\n'
+        'printf "IMAGE=%s\\nTAGS=%s\\nIS_DEFAULT_BRANCH=%s\\nSHORT_SHA=%s\\n" '
+        '"$IMAGE" "$TAGS" "$IS_DEFAULT_BRANCH" "$SHORT_SHA"\n'
+    )
     proc = subprocess.run(
-        ["bash", str(script_path)],
+        ["bash", "-c", inner],
         capture_output=True,
         text=True,
         env=env,
@@ -160,6 +170,87 @@ class TestComputeImageTagsScript(unittest.TestCase):
         """Contrat complet: vide = aucune violation."""
         violations = _script_contract_violations(SCRIPT_PATH)
         self.assertEqual(violations, [], f"contract violations: {violations}")
+
+
+class TestEvalSplit(unittest.TestCase):
+    """E5-BUILD-FIX — eval "$(compute_image_tags.sh)" préserve TAGS multi-mots.
+
+    Bug constaté en CI (exit 127): le script sortait `TAGS=a b c` non-quoté;
+    l'eval du workflow assignait TAGS au 1er mot puis EXÉCUTAIT les mots
+    suivants comme des commandes ('ghcr.io/...:canary: No such file or
+    directory'). Le contrat: rc=0, aucun mot exécuté, TAGS complet.
+    """
+
+    def _eval_script(self, script_path: Path, ref: str, ref_name: str = "") -> subprocess.CompletedProcess:
+        """Évalue la sortie du script dans un bash, comme le font les workflows."""
+        env = dict(os.environ)
+        env.update(
+            IMAGE=IMAGE,
+            GITHUB_REF=ref,
+            GITHUB_REF_NAME=ref_name,
+            GITHUB_SHA=SHA,
+        )
+        env.pop("GITHUB_ENV", None)
+        inner = (
+            f'eval "$(IMAGE="$IMAGE" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" '
+            f'GITHUB_REF_NAME="$GITHUB_REF_NAME" bash {script_path})"\n'
+            'rc=$?\n'
+            'echo "EVAL_RC=$rc"\n'
+            'echo "TAGS_VALUE=$TAGS"\n'
+        )
+        return subprocess.run(
+            ["bash", "-c", inner],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+    @staticmethod
+    def _parsed(proc: subprocess.CompletedProcess) -> tuple:
+        """Extrait (eval_rc, tags_value) de la sortie de la couche eval."""
+        eval_rc = None
+        tags_value = None
+        for line in proc.stdout.splitlines():
+            if line.startswith("EVAL_RC="):
+                eval_rc = int(line.partition("=")[2])
+            elif line.startswith("TAGS_VALUE="):
+                tags_value = line.partition("=")[2]
+        return eval_rc, tags_value
+
+    def test_eval_preserves_full_tags_and_executes_nothing(self):
+        """rc=0, aucun stderr d'exécution, TAGS contient toutes les valeurs."""
+        cases = [
+            (
+                "refs/heads/feat/qwen3-asr-backend",
+                "feat/qwen3-asr-backend",
+                {f"{IMAGE}:sha-{SHA[:8]}", f"{IMAGE}:canary", f"{IMAGE}:feat-qwen3-asr-backend"},
+            ),
+            (
+                "refs/heads/main",
+                "main",
+                {f"{IMAGE}:sha-{SHA[:8]}", f"{IMAGE}:canary", f"{IMAGE}:latest"},
+            ),
+        ]
+        for ref, ref_name, expected in cases:
+            with self.subTest(ref=ref):
+                proc = self._eval_script(SCRIPT_PATH, ref, ref_name)
+                self.assertEqual(
+                    proc.returncode,
+                    0,
+                    f"eval layer rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}",
+                )
+                self.assertNotIn("No such file or directory", proc.stderr, "a tag word was EXECUTED as a command")
+                self.assertNotIn("command not found", proc.stderr, "a tag word was EXECUTED as a command")
+                eval_rc, tags_value = self._parsed(proc)
+                self.assertEqual(eval_rc, 0, f"script rc inside eval={eval_rc}\nstderr={proc.stderr}")
+                self.assertIsNotNone(tags_value, "TAGS not set after eval")
+                got = set(tags_value.split())
+                self.assertEqual(
+                    got,
+                    expected,
+                    f"eval lost tag values: got {sorted(got)}, expected {sorted(expected)}",
+                )
 
 
 class TestSabotageBites(unittest.TestCase):
