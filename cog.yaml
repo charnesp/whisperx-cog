@@ -20,7 +20,9 @@ build:
     # VAD is bundled in whisperx>=3.2 (whisperx/assets/pytorch_model.bin) —
     # nothing to provision, arrives via pip.
 environment:
+  # No offline flags (E5-LEGACY-HF): HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE
+  # blocked the only legitimate network call — the gated pyannote download
+  # on diarize (first run). Provisioned models are resolved from /models by
+  # model_paths; anything missing downloads from HF with the container token.
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
-  - "HF_HUB_OFFLINE=1"
-  - "TRANSFORMERS_OFFLINE=1"
 predict: "predict.py:Predictor"

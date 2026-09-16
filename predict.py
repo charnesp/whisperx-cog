@@ -27,7 +27,6 @@ from model_paths import (
     resolve_vad_source_path,
     resolve_whisper_model_path,
 )
-from models_lock import boot_validate as validate_boot_models
 from models_registry import (
     MODELS,
     resolve_key as _resolve_model_key,
@@ -55,9 +54,9 @@ _QWEN_MODEL_KEY = _resolve_model_key(QWEN_MODEL_NAME)
 _QWEN_ALIGNER_KEY = "qwen3-forced-aligner-0.6b"
 QWEN_ASR_HF_REPO = MODELS[_QWEN_MODEL_KEY].hf_repo
 QWEN_ALIGNER_HF_REPO = MODELS[_QWEN_ALIGNER_KEY].hf_repo
-# Snapshot dirs come from model_paths.resolve_model_dir (fail-HARD, T3):
-# env override → lock /models/<key>/<sha40>/ → ./models dev → raise.
-# Non-empty weight files that must exist in each snapshot
+# Snapshot dirs come from model_paths.resolve_model_dir (E5-LEGACY-HF):
+# env override → provisioned /models/<key>/<sha40>/ → HF repo id.
+# Non-empty weight files that must exist in each provisioned snapshot
 QWEN_ASR_WEIGHT_FILES = list(MODELS[_QWEN_MODEL_KEY].weight_files)
 QWEN_ALIGNER_WEIGHT_FILES = list(MODELS[_QWEN_ALIGNER_KEY].weight_files)
 
@@ -174,28 +173,16 @@ def qwen_effective_language(whisper_model: str, language):
     return str(language).strip() or None
 
 
-def assert_baked_qwen_weights(snapshot_dir: str, weight_files=None) -> None:
-    """Back-compat shim (T3 BLUE): single check point = models_lock.
-
-    Delegates to assert_snapshot_weights (non-empty weights). The
-    fail-fast semantics are unchanged, only the vocabulary is unified
-    (E_MODEL_WEIGHTS_MISSING + provisioner remediation).
-    """
-    from models_lock import assert_snapshot_weights
-
-    assert_snapshot_weights(snapshot_dir, weight_files or QWEN_ASR_WEIGHT_FILES)
-
-
 _QWEN_ALIGNER_LOCAL_PATHS_SENTINEL = ["qwen3-forced-aligner-0.6b"]
 
 
 def resolve_qwen_snapshot_dir(candidates=None) -> str:
-    """Back-compat shim: fail-HARD registry resolution (T3).
+    """Back-compat shim: registry resolution with legacy HF fallback
+    (E5-LEGACY-HF).
 
-    Delegates to model_paths.resolve_model_dir (env override → lock
-    /models/<key>/<sha40>/ → ./models dev → ModelNotProvisioned, never a
-    HF fallback). The `candidates` argument is ignored: the registry is
-    the single source of truth.
+    Delegates to model_paths.resolve_model_dir (env override →
+    provisioned /models/<key>/<sha40>/ → HF repo id). The `candidates`
+    argument is ignored: the registry is the single source of truth.
     """
     key = _QWEN_ALIGNER_KEY if candidates else _QWEN_MODEL_KEY
     return resolve_model_dir(key)
@@ -220,12 +207,6 @@ class Output(BaseModel):
 
 class Predictor(BasePredictor):
     def setup(self):
-        # Boot validation FIRST (E5-CODE-1 T2): fail-fast with a structured
-        # E_MODEL_NOT_PROVISIONED error + provisioner remediation before any
-        # other loading. An unprovisioned /models volume must crash-loop
-        # here, never reach a request with a deep HF_HUB_OFFLINE traceback.
-        validate_boot_models()
-
         destination_folder = "../root/.cache/torch"
         os.makedirs(destination_folder, exist_ok=True)
 
@@ -438,13 +419,12 @@ class Predictor(BasePredictor):
             start_time = time.time_ns() / 1e9
 
             if is_qwen:
-                # Qwen3-ASR path: local baked snapshot + explicit fp16 dtype
-                # (default fp32 measures ~10 GB VRAM vs ~5 GB fp16). Baked
-                # weights are mandatory: HF_HUB_OFFLINE=1 forbids runtime
-                # downloads, so fail fast with a clear message instead.
+                # Qwen3-ASR path: provisioned snapshot + explicit fp16 dtype
+                # (default fp32 measures ~10 GB VRAM vs ~5 GB fp16). The
+                # snapshot dir resolves from /models when provisioned, else
+                # the HF repo id (runtime download, legacy behavior).
                 qwen_snapshot_dir = resolve_qwen_snapshot_dir()
-                assert_baked_qwen_weights(qwen_snapshot_dir, QWEN_ASR_WEIGHT_FILES)
-                print(f"Qwen ASR snapshot: {qwen_snapshot_dir}", flush=True)
+                print(f"Qwen ASR source: {qwen_snapshot_dir}", flush=True)
                 asr_qwen_module = importlib.import_module("whisperx.asr_qwen")
                 language = qwen_effective_language(whisper_model, language)
                 model = asr_qwen_module.load_model(
@@ -453,7 +433,6 @@ class Predictor(BasePredictor):
                     language=language,
                     vad_options=vad_options,
                     qwen_dtype="float16",
-                    local_files_only=True,
                 )
             else:
                 model = whisperx.load_model(
@@ -738,7 +717,6 @@ def align_qwen(audio, result, debug):
     start_time = time.time_ns() / 1e9
 
     aligner_snapshot_dir = resolve_qwen_snapshot_dir(_QWEN_ALIGNER_LOCAL_PATHS_SENTINEL)
-    assert_baked_qwen_weights(aligner_snapshot_dir, QWEN_ALIGNER_WEIGHT_FILES)
     print(f"Qwen forced aligner snapshot: {aligner_snapshot_dir}", flush=True)
 
     alignment_qwen_module = importlib.import_module("whisperx.alignment_qwen")

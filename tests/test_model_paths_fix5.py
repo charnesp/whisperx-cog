@@ -1,19 +1,14 @@
-"""FIX 5 (🟡, E5-CODE review): cleanups — dead constants + error message.
+"""FIX 5 (🟡, E5-CODE review): no dead constants.
 
-(a) models_registry._WHISPER_KEYS/_QWEN_MODEL_KEY/_QWEN_ALIGNER_KEY and
-    model_paths._WHISPER_KEYS are unused or shadowed: model_paths must
-    derive its key lists from the registry's MODELS (no second literal).
-(b) model_paths.resolve_whisper_model_path's error claims "legacy flat
-    dirs also unavailable: <candidates>" — but those dirs were NOT
-    individually checked (only ./models/<dirname> under MODELS_MODE=dev
-    was). The message must only allege the paths actually tried.
+models_registry._WHISPER_KEYS/_QWEN_MODEL_KEY/_QWEN_ALIGNER_KEY and
+model_paths._WHISPER_KEYS are unused or shadowed: model_paths must derive
+its key lists from the registry's MODELS (no second literal).
 
-RED du cycle : les tests échouent tant que les constantes mortes
-existent et tant que le message allègue des chemins non testés.
+(E5-LEGACY-HF): the error-message prose tests are gone with the fail-hard
+raise itself — resolution falls back to the HF repo id, nothing to allege.
 """
 
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -21,8 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
-
-from test_model_paths_failhard import mock_env  # noqa: E402
 
 WHISPER_KEYS = ("large-v3", "large-v3-turbo", "tiny")  # non-qwen registry keys
 
@@ -52,39 +45,6 @@ class TestNoDeadConstants(unittest.TestCase):
             sorted(mp.WHISPER_MODEL_LOCAL_PATHS), sorted(WHISPER_KEYS)
         )
         self.assertEqual(sorted(mp.ENV_OVERRIDES), sorted(WHISPER_KEYS))
-
-
-class TestErrorMessageAllegesOnlyTestedPaths(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name) / "models"
-        self.root.mkdir()
-
-    def test_no_legacy_clause_when_baked_dir_absent(self):
-        import model_paths as mp
-
-        with mock_env(**{"MODELS_DIR": str(self.root), "MODELS_MODE": ""}):
-            with self.assertRaises(mp.ModelNotProvisioned) as ctx:
-                mp.resolve_whisper_model_path("tiny")
-        text = str(ctx.exception)
-        self.assertNotIn(
-            "legacy flat dirs also unavailable",
-            text,
-            "the error must not allege legacy dirs it never checked",
-        )
-
-    def test_error_lists_the_tried_lock_path(self):
-        import model_paths as mp
-        import models_lock
-
-        with mock_env(**{"MODELS_DIR": str(self.root), "MODELS_MODE": ""}):
-            with self.assertRaises(mp.ModelNotProvisioned) as ctx:
-                mp.resolve_whisper_model_path("tiny")
-        lock = models_lock.parse_lock(models_lock.DEFAULT_LOCK_PATH)
-        tried = f"{self.root}/tiny/{lock['tiny']['revision']}"
-        self.assertIn(tried, str(ctx.exception))
-        self.assertIn("docker run --rm", str(ctx.exception))
 
 
 if __name__ == "__main__":

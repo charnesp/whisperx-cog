@@ -1,14 +1,13 @@
 """BLUE-cycle guards for the fused check point (E5-CODE-1 T3 BLUE).
 
-resolve_qwen_snapshot_dir / assert_baked_qwen_weights must be fused into
-the registry-backed resolver: model_paths.resolve_model_dir is the SINGLE
-check point (env override + lock layout + .complete + weights). predict
-keeps thin shims only.
+resolve_qwen_snapshot_dir is fused into the registry-backed resolver:
+model_paths.resolve_model_dir is the SINGLE resolution point (env override
++ lock layout + .complete + weights, else HF repo id — E5-LEGACY-HF).
+predict keeps thin shims only; the fail-hard weights shim is REMOVED.
 
 Anti-regression guards:
-- predict.assert_baked_qwen_weights is a back-compat shim delegating to
-  the resolver, no duplicated weight-check logic;
-- a resolved dir is guaranteed to carry non-empty weights (single check).
+- no duplicated weight-check logic in predict.py;
+- a resolved provisioned dir is guaranteed to carry non-empty weights.
 """
 
 from __future__ import annotations
@@ -34,23 +33,12 @@ class TestSingleCheckPoint(unittest.TestCase):
     def setUpClass(cls):
         cls.predict = install()
 
-    def test_predict_weight_assert_is_a_shim(self):
-        """No duplicated weight-check logic in predict.py: the function body
-        must delegate to model_paths/models_lock semantics."""
+    def test_predict_weight_shim_is_removed(self):
+        """E5-LEGACY-HF: the fail-hard weights shim is gone from predict.py
+        (no anti-download guard: absent model => HF repo id, runtime
+        download)."""
         src = (REPO_ROOT / "predict.py").read_text()
-        self.assertNotIn("def assert_baked_qwen_weights", src.replace(
-            "def assert_baked_qwen_weights(snapshot_dir: str, weight_files=None) -> None:",
-            "", 1,
-        ).replace(
-            "def assert_baked_qwen_weights(snapshot_dir, weight_files=None):",
-            "", 1,
-        )) if False else None
-        # The shim must be thin: its body references weight_files only via
-        # the registry/lock, no local missing-list computation.
-        body_start = src.index("def assert_baked_qwen_weights")
-        body = src[body_start : src.index("\ndef ", body_start + 1)]
-        self.assertNotIn("missing = [", body)
-        self.assertNotIn("getsize", body)
+        self.assertNotIn("assert_baked_qwen_weights", src)
 
     def test_resolved_dir_always_has_complete_and_weights(self):
         """One check point: whatever resolve_model_dir returns is valid."""
