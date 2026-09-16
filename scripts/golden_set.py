@@ -667,16 +667,14 @@ def run_golden_set(
             failed_runs[name] = str(exc)
             runs[name] = {"whisper_model": spec["whisper_model"], "ok": False, "error": str(exc)}
             print(f"RUN FAILED: {name}: {exc}", flush=True)
-            _write_partial_snapshot(output_path, runs=runs, failed_runs=failed_runs)
-            free_fn()
-            continue
-        runs[name] = run
-        words_speakers_ok = words_speakers_ok and run["words_carry_speakers"]
-        segments = _segments_from_transcript(run)
-        if segments:
-            all_fps.extend(find_hotword_false_positives(segments, HOTWORD_TERMS))
-        # E4-EXEC-FIX FIX C: incremental snapshot AFTER each completed run
-        # (result extracted and stored first, then VRAM released — FIX B)
+        else:
+            runs[name] = run
+            words_speakers_ok = words_speakers_ok and run["words_carry_speakers"]
+            segments = _segments_from_transcript(run)
+            if segments:
+                all_fps.extend(find_hotword_false_positives(segments, HOTWORD_TERMS))
+        # E4-EXEC-FIX FIX C: incremental snapshot AFTER each run (result
+        # extracted and stored first, then VRAM released — FIX B)
         _write_partial_snapshot(output_path, runs=runs, failed_runs=failed_runs)
         free_fn()
 
