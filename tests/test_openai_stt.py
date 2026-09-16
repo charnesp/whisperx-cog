@@ -7,9 +7,6 @@ import json
 import sys
 import threading
 import unittest
-import urllib.error
-from email import policy
-from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -20,11 +17,9 @@ import openai_compat
 from openai_compat import (
     MOCK_COG_OUTPUT,
     MODEL_MAP,
-    OPENAI_AUDIO_EXTENSIONS,
     auth_error_response,
     build_audio_data_uri,
     build_cog_input,
-    call_cog_sync,
     convert_cog_output,
     convert_to_diarized_json,
     convert_to_json,
@@ -58,9 +53,6 @@ def _encode_multipart(fields, files):
 
 
 def _parse_multipart(body_bytes, content_type):
-    msg = BytesParser(policy=policy.default).parsebytes(
-        f"Content-Type: {content_type}\r\n\r\n".encode() + body_bytes
-    )
     fs, err = openai_compat.parse_multipart_form(
         {"Content-Type": content_type},
         io.BytesIO(body_bytes),
@@ -552,9 +544,6 @@ class TestOpenAiCompatHttp(unittest.TestCase):
         self.assertNotIn("segments", payload)
 
     def test_cog_hf_token_failure_500(self):
-        urlopen_fn = mock_cog_urlopen_factory(
-            fail_status="failed",
-        )
         # Override to return HF token error
         captured = {"requests": []}
 

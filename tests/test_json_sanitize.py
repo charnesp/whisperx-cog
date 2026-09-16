@@ -1,7 +1,6 @@
 """Unit tests for json_sanitize (no GPU / cog required)."""
 
 import json
-import math
 import unittest
 
 from json_sanitize import sanitize_error_message, sanitize_for_json
