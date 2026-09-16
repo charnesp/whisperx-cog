@@ -26,7 +26,7 @@
 - [x] 4.3 On the qwen path: apply `QWEN_DEFAULT_BATCH`/clamp (helper from 3.3), skip the `detect_language` loop (pass provided `language` as-is), forward `context` to `QwenAsrPipeline.transcribe` per batch
 - [x] 4.4 Alignment on the qwen path: `Qwen/Qwen3-ForcedAligner-0.6B` from baked `/models`; pyannote diarization stage unchanged (output schema identical)
 - [x] 4.5 Boot fail-fast: missing baked qwen weights + `HF_HUB_OFFLINE=1` → clear RuntimeError at model load
-- [ ] 4.6 Manual smoke on GPU: one short FR clip end-to-end (transcribe + align + diarize), word timestamps present, VRAM logged <!-- PARTIAL (16/09): transcribe qwen validé e2e sur le canary (réunion réelle 0901_1132, HTTP 200); align + diarize + word timestamps sur clip court NON refaits sur le canary (schéma diarize validé en E4 sur le harness); reste pending -->
+- [x] 4.6 Manual smoke on GPU: one short FR clip end-to-end (transcribe + align + diarize), word timestamps present, VRAM logged <!-- fait 16/09 via canary (transcribe+align+diarize, 143 words horodatés, 2 speakers, fr, VRAM pic 11939 MiB); réserve chemin: chaîne predict in-conteneur validée; bridge OpenAI-compat n'expose pas align/diarize pour qwen3-asr; POST /predictions bloqué sans HUGGINGFACE_TOKEN dans l'env canary — correctif compose recommandé si diarize-via-bridge requis -->
 
 ## 5. Dependencies and baking
 
