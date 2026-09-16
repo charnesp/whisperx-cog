@@ -79,3 +79,14 @@ Bridge boundary only — not Cog/Replicate prediction objects.
 `diarized_json` groups Cog word-level `speaker` labels into OpenAI speaker turns. WhisperX `SPEAKER_00` → `A`, `SPEAKER_01` → `B`, etc.; optional `known_speaker_names[]` overrides the first N speakers. Requires `model=gpt-4o-transcribe-diarize` and whisperx `HUGGINGFACE_TOKEN` (or Cog `huggingface_access_token` input).
 
 Unit tests: `tests/test_openai_stt.py`
+
+## Model backends (Cog `whisper_model`)
+
+| Cog `whisper_model` | Engine | Default `batch_size` (when omitted) | Hotwords semantics |
+|---------------------|--------|-------------------------------------|--------------------|
+| `tiny` / `large-v3` / `large-v3-turbo` | faster-whisper | `64` (`WHISPER_DEFAULT_BATCH`, pre-change behavior) | faster-whisper hotwords (passed to the whisper `transcribe` options) |
+| `qwen3-asr` | Qwen3-ASR-1.7B (`qwen-asr` pipeline) | `resolve_qwen_batch_size()`: default `4` (`QWEN_DEFAULT_BATCH`), explicit values clamped to `1..8` (`QWEN_MAX_BATCH`), non-positive → default | **Context semantics** — hotwords are NOT passed to the ASR options: `format_qwen_context()` wraps them in the meeting-context template (`Contexte technique de la réunion. Termes, entités et noms propres attendus : <hotwords>.`) and the resulting `context` string is forwarded to the Qwen pipeline per batch. No post-filtering of the output is done. |
+
+Qwen context rules: empty/absent hotwords → empty `context` (neutral); cap `QWEN_CONTEXT_CAP = 2000` chars applied after template assembly — truncation logs carry lengths only, never content. `ENABLE_QWEN` gates the qwen backend (see [BRIDGE.md](./BRIDGE.md) for the bridge kill-switch).
+
+Unit tests: `tests/test_qwen_backend.py`, `tests/test_openai_stt.py`

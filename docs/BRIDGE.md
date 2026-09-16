@@ -25,6 +25,7 @@ python3 scripts/check-bridge-sync.py    # before commit (also: make smoke)
 | `OPENAI_STT_TIMEOUT_SECONDS` | env / `.env` | `300` | Sync Cog POST read timeout (OpenAI STT) |
 | `OPENAI_STT_MAX_FILE_SIZE_MB` | env / `.env` | `25` | Max upload size (OpenAI STT) |
 | `HUGGINGFACE_TOKEN` | `HUGGINGFACE_TOKEN` | — | Passed to whisperx container only |
+| `ENABLE_QWEN` | env / `.env` | unset = **enabled** | Kill-switch for the `qwen3-asr` backend (see [Enable gate](#enable-gate-enable_qwen) below) |
 
 Loopback addresses (`127.0.0.1:6379`, `127.0.0.1:5000`, `localhost:8080` webhook) are fixed because Cog, Redis, and bridge share one network namespace.
 
@@ -92,6 +93,22 @@ Fixed Cog input on this path: `align_output: true`. Non-diarize requests set `di
 | `chunking_strategy` | Accepted (no-op); WhisperX VAD handles long audio |
 | `prompt`, `timestamp_granularities`, `include[]=logprobs` | HTTP 400 |
 | `known_speaker_references[]` | HTTP 400 — not implemented (see [PLANS.md](../PLANS.md) tech debt) |
+
+### Enable gate (ENABLE_QWEN)
+
+`model=qwen3-asr` is **gated at the bridge**: when the backend is disabled, the bridge refuses the request with HTTP 400 (`invalid_request_error`, message `qwen3-asr backend is disabled (ENABLE_QWEN)`) instead of forwarding a request that would fail with a Cog-side 500. `predict.py` keeps its own `qwen_enabled()` gate as defense in depth.
+
+| `ENABLE_QWEN` (bridge env, read at request time — toggle without redeploy) | Behavior for `model=qwen3-asr` |
+|---|---|
+| unset (default) | **Enabled** — same default as `predict.qwen_enabled()` |
+| `1` / `true` / `yes` / `on` (case-insensitive) | Enabled |
+| anything else (`0`, `false`, `empty`, …) | HTTP 400 — qwen refused; whisper models unaffected |
+
+### Qwen passthrough rules (`model=qwen3-asr`)
+
+- **`hotwords`**: forwarded to Cog **only** on the qwen path (`QWEN_MODELS`); whisper models always send `hotwords: null` (whisper semantics unchanged). Hotwords become the Qwen transcription **context** — see [DATA_CONTRACTS.md](./DATA_CONTRACTS.md).
+- **`batch_size` passthrough rule**: `batch_size` is included in the Cog input **only when the client provides it** (no hard-coded default in the bridge); the Cog predictor applies the per-model default (64 faster-whisper / 4 qwen, qwen values clamped 1-8). A non-integer value → HTTP 400 `batch_size must be an integer`.
+- **no-hotwords-in-logs**: hotword content is never logged. The `[bridge ext]` request log carries `path, bytes, model, format, status, duration` only (verified in `bridge/bridge.py` `handle_openai_transcription`); inside `openai_compat.py` hotwords are read and passed through but never appear in a log call, and Qwen context truncation logs lengths only.
 
 ## Probes
 
