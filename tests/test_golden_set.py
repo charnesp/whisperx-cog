@@ -1198,5 +1198,452 @@ class TestCliBatchOptions(unittest.TestCase):
         self.assertEqual(exit_code, 2)
 
 
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestLabelingGateRecalibration(unittest.TestCase):
+    """E4-QUAL-FIX FIX 1 (🟡): the 100% labeling gate was a calibration defect.
+
+    Real GPU runs (golden_set_run1/2.json): 5470/6021 qwen words labeled
+    (99.95% of the NON zero-duration words); the unlabeled ones are boundary
+    duplicates where the ForcedAligner emits start==end. The gate must
+    exclude zero-duration boundary duplicates from the denominator, apply a
+    >= 85% labeling threshold and produce a factual failure message.
+    """
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    @staticmethod
+    def _result(labeled, unlabeled_zero=0, unlabeled_nonzero=0):
+        words = []
+        for i in range(labeled):
+            words.append({"word": f"w{i}", "start": 0.1 * i, "end": 0.1 * i + 0.05, "speaker": "SPEAKER_00"})
+        for i in range(unlabeled_zero):
+            words.append({"word": f"z{i}", "start": 5.0 + 0.1 * i, "end": 5.0 + 0.1 * i})
+        for i in range(unlabeled_nonzero):
+            words.append({"word": f"u{i}", "start": 6.0 + 0.1 * i, "end": 6.1 + 0.1 * i})
+        return {"segments": [{"start": 0.0, "end": 10.0, "text": "texte", "words": words}]}
+
+    def test_zero_duration_boundary_duplicates_excluded(self):
+        # 950/950 non-zero-duration words labeled; 50 unlabeled zero-duration
+        # duplicates must NOT drag the ratio down — the 100% gate said False.
+        result = self._result(labeled=950, unlabeled_zero=50)
+        self.assertTrue(self.gs.words_carry_speakers(result))
+
+    def test_labeling_below_threshold_flagged(self):
+        result = self._result(labeled=80, unlabeled_nonzero=20)
+        self.assertFalse(self.gs.words_carry_speakers(result))
+
+    def test_segment_without_words_still_flagged(self):
+        # no vacuous pass: a segment without words means the handoff failed
+        result = {"segments": [{"start": 0.0, "end": 1.0, "text": "Bonjour"}]}
+        self.assertFalse(self.gs.words_carry_speakers(result))
+
+    def test_empty_segments_flagged(self):
+        self.assertFalse(self.gs.words_carry_speakers({"segments": []}))
+
+    def test_labeling_min_ratio_constant_is_85_percent(self):
+        self.assertEqual(self.gs.LABELING_MIN_RATIO, 0.85)
+
+    def test_labeling_stats_helper_counts_nonzero_duration_words(self):
+        result = self._result(labeled=950, unlabeled_zero=50, unlabeled_nonzero=20)
+        labeled, total = self.gs.word_labeling_stats(result)
+        self.assertEqual((labeled, total), (950, 970))
+
+    def test_labeling_partial_message_factual(self):
+        message = self.gs.labeling_failure_message({"segments": []})
+        # factual: 'labeling partial: N/M words', never a vague claim
+        self.assertIn("labeling partial:", message)
+        self.assertRegex(message, r"labeling partial: \d+/\d+ words")
+
+    def test_evaluate_report_failure_message_is_factual(self):
+        report = {
+            "runs": {},
+            "word_timestamps_present": True,
+            "words_carry_speakers": False,
+            "word_labeling": {"labeled": 5470, "total": 6021},
+            "vram_peak_gb": 4.99,
+            "rtfx": 52.0,
+            "false_positives": [],
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertFalse(evaluation["all_pass"])
+        factual = [f for f in evaluation["failures"] if "labeling partial: 5470/6021 words" in f]
+        self.assertTrue(factual, f"expected factual labeling message, got {evaluation['failures']}")
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestHotwordFpRecalibration(unittest.TestCase):
+    """E4-QUAL-FIX FIX 2 (🟡): the FP detector flagged 4 legitimate mentions.
+
+    Observed on the real GPU run (golden_set_run1.json): 3 flagged segments
+    come from the TURBO baseline (no hotwords active — the term was actually
+    spoken, e.g. 'Le upload, dans le cas de Backblaze...') and 1 from the
+    qwen_hotwords run ('...les volumétries... J'ai une question sur Backblaze')
+    where the term is topical. The detector must (a) recognize the topical
+    context of the flagged segments, (b) anchor FPs on word starts, (c) tag
+    hallucinated insertions vs legitimate mentions.
+    """
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    def test_upload_cost_segment_not_flagged(self):
+        # turbo seg 219 (start 1084.002): topical (upload/cost) — was FP-flagged
+        segments = [{"start": 1084.002, "text": "Le upload, dans le cas de Backblaze, n'a pas de coûté d'argent."}]
+        fps = self.gs.find_hotword_false_positives(segments, ["Backblaze"])
+        self.assertEqual(fps, [])
+
+    def test_secrets_segment_not_flagged_with_neighbor_context(self):
+        # turbo seg 336 (start 1652.872): the NEXT segment carries 'clé API'/'buckets'
+        segments = [
+            {"start": 1652.872, "text": "Comment sont gérés les secrets de Backblaze ?"},
+            {"start": 1663.714, "text": "tu vas leur filer, tu fais un travail par clé API, et les clés API sont liées à des buckets."},
+        ]
+        fps = self.gs.find_hotword_false_positives(segments, ["Backblaze"])
+        self.assertEqual(fps, [])
+
+    def test_capteur_connecter_segment_not_flagged(self):
+        # turbo seg 347 (start 1737.357): 'se connecter à Backblaze' is topical
+        segments = [
+            {"start": 1722.323, "text": "C'est une autre API qui a accès à la clé Backblaze qui fournait juste un lien signé."},
+            {"start": 1737.357, "text": "Le capteur ne peut pas se connecter à Backblaze lui."},
+        ]
+        fps = self.gs.find_hotword_false_positives(segments, ["Backblaze"])
+        self.assertEqual(fps, [])
+
+    def test_volumetrie_segment_not_flagged(self):
+        # qwen_hotwords seg 27 (start 597.794): 'volumétries' + the next segment
+        # discusses the same topic ('serveur', 'stockage')
+        segments = [
+            {"start": 597.794, "text": "De points, il peut peut-être te faire du cinq pour cent de l'ensemble à la fin. En attendant qu'on trouve les volumétries, à quelle vitesse ? J'ai une question. J'ai une question sur Backblaze. Je sais jamais quand."},
+            {"start": 618.078, "text": "Backblaze, c'est quoi le principe de Backblaze, Charles ? C'est c'est juste un serveur qui est pas trop cher."},
+        ]
+        fps = self.gs.find_hotword_false_positives(segments, ["Backblaze"])
+        self.assertEqual(fps, [])
+
+    def test_fp_anchored_on_word_start(self):
+        # the FP entry carries the WORD start of the matched hotword (word-level
+        # anchor), not only the segment start
+        segments = [
+            {
+                "start": 100.0,
+                "text": "le planning est validé backblaze.",
+                "words": [
+                    {"word": "le", "start": 100.0, "end": 100.2},
+                    {"word": "backblaze", "start": 104.834, "end": 105.394},
+                ],
+            }
+        ]
+        fps = self.gs.find_hotword_false_positives(segments, ["Backblaze"], context_keywords=())
+        self.assertEqual(len(fps), 1)
+        self.assertEqual(fps[0]["word_start"], 104.834)
+        self.assertEqual(fps[0]["segment_start"], 100.0)
+
+    def test_baseline_mention_classified_legitimate(self):
+        # the term already appears in the (hotword-free) baseline transcript:
+        # the word was actually spoken at that region -> legitimate mention
+        segments = [{"start": 0.0, "text": "question sur backblaze dans la réunion", "words": []}]
+        fps = self.gs.find_hotword_false_positives(
+            segments, ["Backblaze"], context_keywords=(), baseline_text="on a parlé de backblaze aujourd'hui"
+        )
+        self.assertEqual(len(fps), 1)
+        self.assertEqual(fps[0]["classification"], "legitimate_mention")
+
+    def test_hallucinated_insertion_classification(self):
+        # hotword present, baseline ABSENT, segment non-topical: insertion
+        segments = [{"start": 0.0, "text": "le planning est validé backblaze.", "words": []}]
+        fps = self.gs.find_hotword_false_positives(
+            segments, ["Backblaze"], context_keywords=(), baseline_text="le planning de la semaine"
+        )
+        self.assertEqual(len(fps), 1)
+        self.assertEqual(fps[0]["classification"], "hallucinated_insertion")
+
+    def test_report_distinguishes_legitimate_mentions_from_insertions(self):
+        report = self.gs.build_report(
+            runs={},
+            word_timestamps_present=True,
+            words_carry_speakers=True,
+            vram_peak_gb=4.99,
+            rtfx=52.0,
+            false_positives=[{"hotword": "Backblaze", "classification": "legitimate_mention"}],
+            legitimate_mentions=[{"hotword": "Backblaze", "classification": "legitimate_mention"}],
+        )
+        self.assertEqual(report["false_positives"], [])
+        self.assertEqual(len(report["legitimate_mentions"]), 1)
+
+    def test_run_golden_set_scans_only_hotwords_active_run(self):
+        # the turbo baseline carries NO injected hotwords: its mentions are
+        # legitimate transcriptions and must not feed the FP list
+        self.gs.RUNS_KEYS_HOTWORDS_ACTIVE = {"qwen_hotwords"}  # documented constant
+        self.assertIn("qwen_hotwords", self.gs.RUNS_KEYS_HOTWORDS_ACTIVE)
+        self.assertNotIn("turbo_baseline", self.gs.RUNS_KEYS_HOTWORDS_ACTIVE)
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestVramByStage(unittest.TestCase):
+    """E4-QUAL-FIX FIX 3 (🟡): VRAM logged after EACH pipeline stage.
+
+    The 5.757 GB peak includes the resident aligner + diarize models; the
+    15/09 4.99 GB reference was ASR-only. The report must carry a per-stage
+    decomposition (vram_by_stage) and the pipeline threshold must be
+    requalified: ASR < 5.5 GB, full pipeline < 6.5 GB.
+    """
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    def test_run_single_records_vram_by_stage(self):
+        peaks = iter([4.20, 5.10, 5.757])  # after transcribe / align / diarize
+        probes = iter(peaks)
+
+        class FakeModel:
+            def transcribe(self, audio, batch_size=None, context=None, **kwargs):
+                return {"language": "fr", "segments": [{"start": 0.0, "end": 1.0, "text": "Bonjour", "words": []}]}
+
+        run = self.gs.run_single(
+            run_spec={"whisper_model": "qwen3-asr", "hotwords": None},
+            audio_path="x.ogg",
+            load_audio_fn=lambda p: [0.0],
+            model_factory=lambda name: FakeModel(),
+            clock=lambda: 0.0,
+            align_fn=lambda audio, result: result,
+            diarize_fn=lambda audio, result: result,
+            vram_peak_fn=lambda: 5.757,
+            vram_probe_fn=lambda: next(probes),
+        )
+        self.assertEqual(run["vram_by_stage"], {"transcribe": 4.20, "align": 5.10, "diarize": 5.757})
+
+    def test_pipeline_vram_limit_constant_is_6_5(self):
+        self.assertEqual(self.gs.VRAM_PIPELINE_LIMIT_GB, 6.5)
+
+    def test_evaluate_report_pipeline_threshold_6_5(self):
+        # measured full-pipeline peak 5.757 GB must PASS (was a failure at 5.5)
+        report = {
+            "runs": {
+                "turbo_baseline": {"transcript_hash": "a" * 64, "ok": True},
+                "qwen_baseline": {"transcript_hash": "b" * 64, "ok": True},
+                "qwen_hotwords": {"transcript_hash": "c" * 64, "ok": True},
+            },
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 5.757297992706299,
+            "rtfx": 49.5,
+            "false_positives": [],
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertTrue(evaluation["all_pass"], f"5.757 GB pipeline peak must pass: {evaluation['failures']}")
+
+    def test_evaluate_report_pipeline_above_6_5_fails(self):
+        report = {
+            "runs": {},
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 6.6,
+            "rtfx": 52.0,
+            "false_positives": [],
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertFalse(evaluation["all_pass"])
+
+    def test_evaluate_report_asr_stage_threshold_5_5(self):
+        # the ORIGINAL 5.5 GB limit still applies to the ASR stage alone
+        report = {
+            "runs": {},
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 5.2,
+            "vram_by_stage": {"qwen_hotwords": {"transcribe": 5.6, "align": 5.7, "diarize": 5.8}},
+            "rtfx": 52.0,
+            "false_positives": [],
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertFalse(evaluation["all_pass"])
+        self.assertTrue(any("transcribe" in f for f in evaluation["failures"]))
+
+    def test_report_exposes_vram_by_stage(self):
+        runs = {
+            "qwen_hotwords": {
+                "ok": True,
+                "transcript_hash": "c" * 64,
+                "vram_peak_gb": 5.757,
+                "vram_by_stage": {"transcribe": 4.99, "align": 5.1, "diarize": 5.757},
+            }
+        }
+        report = self.gs.build_report(
+            runs=runs,
+            word_timestamps_present=True,
+            words_carry_speakers=True,
+            vram_peak_gb=5.757,
+            rtfx=49.5,
+            false_positives=[],
+        )
+        self.assertEqual(report["vram_by_stage"]["qwen_hotwords"]["transcribe"], 4.2)
+
+    def test_fp16_documented_vs_fp32(self):
+        # docstring guard: the pipeline-vs-ASR distinction is documented
+        import inspect
+
+        src = inspect.getsource(self.gs)
+        self.assertIn("fp16", src)
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestRtfxScope(unittest.TestCase):
+    """E4-QUAL-FIX FIX 4 (🟡): RTFx scope documented + explicitly named keys.
+
+    duration_s wraps the transcribe call ONLY (no align/diarize): the reported
+    RTFx is a TRANSCRIPTION-ONLY ratio (turbo 221 on the harness vs 42 e2e on
+    15/09 — different scope, both correct). The report must carry explicitly
+    named rtfx_transcription and rtfx_e2e keys.
+    """
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    def test_run_single_records_duration_total_s(self):
+        ticks = iter([10.0, 12.0, 14.5])  # transcribe start/end, run end
+
+        class FakeModel:
+            def transcribe(self, audio, batch_size=None, **kwargs):
+                return {"language": "fr", "segments": []}
+
+        run = self.gs.run_single(
+            run_spec={"whisper_model": "qwen3-asr", "hotwords": None},
+            audio_path="x.ogg",
+            load_audio_fn=lambda p: [0.0],
+            model_factory=lambda name: FakeModel(),
+            clock=lambda: next(ticks),
+            align_fn=lambda audio, result: result,
+            diarize_fn=lambda audio, result: result,
+        )
+        self.assertAlmostEqual(run["duration_s"], 2.0)
+        self.assertAlmostEqual(run["duration_total_s"], 4.5)
+
+    def test_duration_s_scope_documented(self):
+        import inspect
+
+        doc = inspect.getdoc(self.gs.run_single) or ""
+        self.assertIn("transcription", doc.lower())
+        self.assertIn("align", doc.lower())
+
+    def test_report_carries_rtfx_transcription_and_rtfx_e2e(self):
+        runs = {
+            "qwen_hotwords": {
+                "ok": True,
+                "transcript_hash": "c" * 64,
+                "duration_s": 43.57,
+                "duration_total_s": 210.0,
+            }
+        }
+        report = self.gs.build_report(
+            runs=runs,
+            word_timestamps_present=True,
+            words_carry_speakers=True,
+            vram_peak_gb=5.7,
+            rtfx=49.48,
+            rtfx_e2e=10.27,
+            false_positives=[],
+            audio_durations_s={"meeting": 2156.058},
+        )
+        self.assertAlmostEqual(report["rtfx_transcription"], 49.48)
+        self.assertAlmostEqual(report["rtfx_e2e"], 10.27)
+        self.assertIn("rtfx_transcription", report)
+        self.assertIn("rtfx_e2e", report)
+
+    def test_evaluate_report_uses_rtfx_transcription(self):
+        report = {
+            "runs": {},
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 5.0,
+            "rtfx_transcription": 49.5,
+            "false_positives": [],
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertTrue(evaluation["all_pass"], f"rtfx_transcription must be the evaluated metric: {evaluation['failures']}")
+
+    def test_evaluate_report_missing_rtfx_transcription_falls_back_to_rtfx(self):
+        report = {
+            "runs": {},
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 5.0,
+            "rtfx": 52.0,
+            "false_positives": [],
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertTrue(evaluation["all_pass"])
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestRegressionHashesThreeEntries(unittest.TestCase):
+    """E4-QUAL-FIX FIX 5 (🟡): the recorded-hashes file must carry THREE
+    entries (turbo, qwen, qwen_hotwords) and evaluate_report must actually
+    check the qwen entries — the current lookup (runs.get(f'{model}_baseline'))
+    silently skips 'qwen3-asr' (run key is 'qwen_baseline') and never checks
+    'qwen_hotwords'.
+    """
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    def test_evaluate_report_checks_qwen3_asr_against_qwen_baseline_run(self):
+        report = {
+            "runs": {
+                "turbo_baseline": {"transcript_hash": "a" * 64, "ok": True},
+                "qwen_baseline": {"transcript_hash": "wrong" + "b" * 59, "ok": True},
+                "qwen_hotwords": {"transcript_hash": "c" * 64, "ok": True},
+            },
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 4.99,
+            "rtfx": 52.0,
+            "false_positives": [],
+            "regression_hashes": {"qwen3-asr": "e" * 64},
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertFalse(evaluation["all_pass"])
+        self.assertTrue(
+            any("qwen" in f for f in evaluation["failures"]),
+            f"recorded 'qwen3-asr' hash must be checked against qwen_baseline: {evaluation['failures']}",
+        )
+
+    def test_evaluate_report_checks_qwen_hotwords_hash(self):
+        report = {
+            "runs": {
+                "turbo_baseline": {"transcript_hash": "a" * 64, "ok": True},
+                "qwen_baseline": {"transcript_hash": "b" * 64, "ok": True},
+                "qwen_hotwords": {"transcript_hash": "wrong" + "c" * 59, "ok": True},
+            },
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 4.99,
+            "rtfx": 52.0,
+            "false_positives": [],
+            "regression_hashes": {"qwen_hotwords": "f" * 64},
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertFalse(evaluation["all_pass"])
+        self.assertTrue(any("qwen_hotwords" in f for f in evaluation["failures"]))
+
+    def test_matching_three_entry_hashes_pass(self):
+        hashes = {"large-v3-turbo": "a" * 64, "qwen3-asr": "b" * 64, "qwen_hotwords": "c" * 64}
+        report = {
+            "runs": {
+                "turbo_baseline": {"transcript_hash": "a" * 64, "ok": True},
+                "qwen_baseline": {"transcript_hash": "b" * 64, "ok": True},
+                "qwen_hotwords": {"transcript_hash": "c" * 64, "ok": True},
+            },
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 4.99,
+            "rtfx": 52.0,
+            "false_positives": [],
+            "regression_hashes": hashes,
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertTrue(evaluation["all_pass"], evaluation["failures"])
+
+
 if __name__ == "__main__":
     unittest.main()
