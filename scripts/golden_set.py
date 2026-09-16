@@ -203,6 +203,22 @@ def count_hotword_occurrences(text: str, terms: list[str]) -> dict[str, int]:
     return counts
 
 
+def _matched_word_start(words: list[dict], term: str, fallback: float) -> float:
+    """Word-level anchor (FIX 2): start of the FIRST word matching the term.
+
+    Exact whole-word match first (punctuation tolerated), then any word
+    CONTAINING the term (phonetic variants), then the segment start.
+    """
+    pattern = re.compile(rf"{re.escape(term)}[.,!?;:]*", re.IGNORECASE)
+    for w in words:
+        if w.get("start") is not None and pattern.fullmatch(str(w.get("word") or "")):
+            return w["start"]
+    for w in words:
+        if w.get("start") is not None and term.lower() in str(w.get("word") or "").lower():
+            return w["start"]
+    return fallback
+
+
 def find_hotword_false_positives(
     segments: list[dict],
     terms: list[str],
@@ -250,21 +266,7 @@ def find_hotword_false_positives(
         for term in terms:
             if not re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE):
                 continue
-            # word-level anchor: the start of the FIRST matched word
-            word_start = next(
-                (
-                    w["start"]
-                    for w in words
-                    if re.fullmatch(rf"{re.escape(term)}[.,!?;:]*", str(w.get("word") or ""), re.IGNORECASE)
-                    and w.get("start") is not None
-                ),
-                None,
-            )
-            if word_start is None:
-                word_start = next(
-                    (w.get("start") for w in words if term.lower() in str(w.get("word") or "").lower()),
-                    seg_start,
-                )
+            word_start = _matched_word_start(words, term, seg_start)
             in_baseline = term.lower() in lowered_baseline
             findings.append(
                 {
@@ -363,13 +365,10 @@ def words_carry_speakers(result: dict, min_ratio: float = LABELING_MIN_RATIO) ->
     segments = (result or {}).get("segments") or []
     if not segments:
         return False
-    for seg in segments:
-        if not (seg.get("words") or []):
-            return False
-    labeled, total = word_labeling_stats(result)
-    if total == 0:
+    if any(not (seg.get("words") or []) for seg in segments):
         return False
-    return (labeled / total) >= min_ratio
+    labeled, total = word_labeling_stats(result)
+    return total > 0 and (labeled / total) >= min_ratio
 
 
 def vram_ok(peak_gb: float) -> bool:
@@ -716,7 +715,9 @@ def build_report(
     # FIX 2: only hallucinated insertions are false positives; legitimate
     # mentions (topical/baseline-present) are reported separately.
     hallucinated = [fp for fp in false_positives if fp.get("classification") != "legitimate_mention"]
-    legit = list(legitimate_mentions or [fp for fp in false_positives if fp.get("classification") == "legitimate_mention"])
+    legit = [fp for fp in false_positives if fp.get("classification") == "legitimate_mention"]
+    if legitimate_mentions is not None:
+        legit = list(legitimate_mentions)
     return {
         "runs": runs,
         "word_timestamps_present": word_timestamps_present,
@@ -784,20 +785,22 @@ def evaluate_report(report: dict[str, Any]) -> dict[str, Any]:
         else:
             failures.append("words_carry_speakers: labeling partial: no words to label (align/diarize handoff missing)")
     vram_peak = report.get("vram_peak_gb", float("inf"))
-    # FIX 3: the reported peak covers the FULL pipeline (transcribe+align+diarize)
-    if not vram_pipeline_ok(vram_peak):
-        failures.append(
-            f"vram: pipeline peak {vram_peak} GB >= {VRAM_PIPELINE_LIMIT_GB} GB "
-            "(full pipeline ASR+align+diarize)"
-        )
-    # per-run pipeline VRAM gate (FIX 7)
+    # FIX 3: the reported peak covers the FULL pipeline (transcribe+align+diarize);
+    # the 5.5 GB limit qualifies the ASR stage alone (vram_by_stage readings).
     for run_name, peak in (report.get("vram_peak_by_run") or {}).items():
         if not vram_pipeline_ok(peak):
             failures.append(
                 f"vram: run {run_name} pipeline peak {peak} GB >= {VRAM_PIPELINE_LIMIT_GB} GB"
             )
-    # FIX 3: the 5.5 GB limit still qualifies the ASR stage ALONE — checked
-    # on the vram_by_stage['transcribe'] readings when the report carries them
+    if vram_peak_by_run := (report.get("vram_peak_by_run") or {}):
+        vram_peak = max(vram_peak, max(vram_peak_by_run.values()))
+    if not vram_pipeline_ok(vram_peak):
+        failures.append(
+            f"vram: pipeline peak {vram_peak} GB >= {VRAM_PIPELINE_LIMIT_GB} GB "
+            "(full pipeline ASR+align+diarize)"
+        )
+    # FIX 3: ASR stage alone — checked on the vram_by_stage['transcribe']
+    # readings when the report carries them
     for run_name, stages in (report.get("vram_by_stage") or {}).items():
         asr_peak = (stages or {}).get("transcribe")
         if asr_peak is not None and not vram_ok(asr_peak):
