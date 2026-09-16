@@ -155,24 +155,145 @@ def _lock_key(repo: str) -> str:
     return base[len("faster-whisper-") :] if base.startswith("faster-whisper-") else base
 
 
+def _parse_v2(text: str) -> dict[str, dict]:
+    """Minimal YAML-subset parser for models.lock schema v2.
+
+    Schema (T5, one source of truth, sha256 per file):
+        version: 2
+        models:
+        - repo: <hf repo>
+          revision: <40-hex>
+          required: true
+          files:
+          - path: <relative path>
+            size: <bytes>
+            sha256: <64-hex>
+            lfs: <bool>
+
+    Returns the same shape as _parse_simple: {model_key: {repo, revision,
+    files: [{path, size, sha256, lfs}]}}. Files keep their declared order
+    (the lock writes them sorted by path).
+    """
+    entries: dict[str, dict] = {}
+    current: dict | None = None
+    current_repo: str | None = None
+    last_key: str | None = None
+    in_files = False
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if stripped.startswith("#") or stripped in ("models:", "version: 2"):
+            continue
+        if stripped.startswith("- ") and indent == 0:
+            if current is not None and current_repo:
+                entries[current_repo] = current
+            current = {}
+            current_repo = None
+            last_key = None
+            in_files = False
+            stripped = stripped[2:]
+        if current is None:
+            continue
+        if stripped.startswith("- "):
+            item = stripped[2:].strip()
+            if in_files and indent >= 2:
+                # New file spec inside files:.
+                current.setdefault("files", []).append(_parse_file_item(item))
+                continue
+            if last_key:
+                current.setdefault(last_key, []).append(item)
+            continue
+        if ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if (
+            indent >= 2
+            and in_files
+            and current.get("files")
+            and not value.startswith("[")
+        ):
+            # Field of the current file spec (size:, sha256:, lfs:).
+            fname = key
+            current["files"][-1][fname] = value
+            continue
+        if value.startswith("[") and value.endswith("]"):
+            items = [
+                v.strip().strip("'\"")
+                for v in value[1:-1].split(",")
+                if v.strip()
+            ]
+            current[key] = items
+        elif value == "":
+            if key == "files":
+                in_files = True
+            last_key = key
+        else:
+            current[key] = value.strip("'\"")
+            if key == "repo" and current_repo is None:
+                current_repo = value.strip("'\"").split("/", 1)[-1]
+            if key == "path" and in_files is False and current.get("files"):
+                pass
+    if current is not None and current_repo:
+        entries[current_repo] = current
+    return entries
+
+
+def _parse_file_item(item: str) -> dict:
+    """First field of a v2 file list item: '- path: config.json'."""
+    if item.startswith("path:"):
+        return {"path": item[len("path:"):].strip().strip("'\"")}
+    return {"path": item}
+
+
 def parse_lock(lock_file: str | Path = DEFAULT_LOCK_PATH) -> dict[str, dict]:
     """Parse models.lock -> {model_key: {repo, revision, expected_files[, sizes]}}.
 
+    Schema detection by `version:` field:
+    - v2 (files: [{path, size, sha256, lfs}]): the adapter derives
+      expected_files from files[].path and sizes from files[].size — the
+      boot contract (presence + exact size + .complete marker, NEVER
+      sha256) is unchanged, only the lock shape moved (E5-LOCK-SYNC).
+    - v1 (expected_files: list + sizes: map): still supported for backward
+      compatibility with pre-T5 pinned locks and legacy fixtures.
+    - any other version: explicit ValueError with the migration command
+      (`uv run scripts/lock_audit.py --regenerate`), never a silent skip.
+
     Key = repo basename (the registry lock_key). Raises ValueError on a
-    malformed entry (missing repo/revision/expected_files or a non-40-hex
-    revision).
+    malformed entry (missing repo/revision/files or a non-40-hex revision).
     """
     path = Path(lock_file)
-    entries = _parse_simple(path.read_text())
+    text = path.read_text()
+    version = _lock_version(text)
+    if version is not None and version != 1 and version != 2:
+        raise ValueError(
+            f"{path}: unsupported models.lock schema version {version}; "
+            "supported: 1 (legacy, expected_files) and 2 (files with sha256). "
+            "Migrate: uv run scripts/lock_audit.py --regenerate"
+        )
+    entries = _parse_v2(text) if version == 2 else _parse_simple(text)
     lock: dict[str, dict] = {}
     for repo_key, entry in entries.items():
         repo = entry.get("repo")
         revision = entry.get("revision")
+        files = entry.get("files")
         expected = entry.get("expected_files")
+        sizes = entry.get("sizes")
+        if files:
+            # v2 → v1-shape adapter: expected_files/sizes derived from files[].
+            expected = [f["path"] for f in files]
+            sizes = {}
+            for f in files:
+                if f.get("size") not in (None, ""):
+                    sizes[f["path"]] = int(f["size"])
         if not repo or not revision or not expected:
             raise ValueError(
                 f"{path}: malformed models.lock entry for {repo_key!r}: "
-                "repo, revision and expected_files are required"
+                "repo, revision and expected_files/files are required"
             )
         if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
             raise ValueError(
@@ -183,13 +304,27 @@ def parse_lock(lock_file: str | Path = DEFAULT_LOCK_PATH) -> dict[str, dict]:
             "revision": revision,
             "expected_files": list(expected),
         }
-        if entry.get("sizes"):
-            lock[_lock_key(repo)]["sizes"] = dict(entry["sizes"])
+        if sizes:
+            lock[_lock_key(repo)]["sizes"] = {
+                name: int(size) for name, size in sizes.items()
+            }
         if not lock[_lock_key(repo)]["expected_files"]:
             raise ValueError(
                 f"{path}: expected_files must not be empty for {repo_key!r}"
             )
     return lock
+
+
+def _lock_version(text: str) -> int | None:
+    """Detect the models.lock schema version (v1 locks carry no version)."""
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if line.startswith("version:"):
+            try:
+                return int(line[len("version:"):].strip())
+            except ValueError:
+                return None
+    return None
 
 
 def expected_paths(
