@@ -48,6 +48,9 @@ sys.path.insert(0, str(REPO_ROOT / "bridge"))
 
 QWEN_DEFAULT_BATCH = 4
 WHISPER_DEFAULT_BATCH = 64
+# E4-EXEC-FIX FIX A: per-run-type batch defaults passed to run_single by
+# run_golden_set (turbo 16 — prod 64 OOMs when free VRAM < 6 GiB; qwen 4).
+PER_MODEL_DEFAULT_BATCH = {"large-v3-turbo": 16, "qwen3-asr": 4}
 VRAM_LIMIT_GB = 5.5  # design.md: fp16 load measures ~4.99 GB; fp32 would be ~10 GB
 RTFX_MIN = 1.0  # slower than realtime = broken
 RTFX_MAX = 300.0  # implausibly fast on a single 4080 (sanity ceiling)
@@ -453,6 +456,43 @@ def vram_peak_real() -> float:
     return torch.cuda.max_memory_allocated() / (1024**3)
 
 
+def free_gpu_real() -> None:
+    """Release VRAM between runs (E4-EXEC-FIX FIX B): gc.collect() then
+    torch.cuda.empty_cache(). On the real GPU run the turbo+qwen+aligner+
+    pyannote models otherwise accumulate in the single harness process and
+    later runs OOM (pyannote wespeaker 312 MiB, aligner 93/93 unaligned).
+    Injectable via run_golden_set(free_fn=...) for GPU-free tests."""
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass  # GPU-free context: gc.collect() is the only releasable step
+
+
+def resolve_batch_size(
+    model_name: str,
+    batch_size: int | None = None,
+    per_model_batch: dict[str, int] | None = None,
+) -> int:
+    """E4-EXEC-FIX FIX A: effective batch for a run.
+
+    Precedence: explicit caller batch_size > per_model_batch table >
+    PER_MODEL_DEFAULT_BATCH (turbo 16, qwen 4). The prod default 64 is
+    deliberately NOT used here — batch is an execution parameter, not a
+    code defect; predict.py is untouched.
+    """
+    if batch_size is not None:
+        return batch_size
+    if per_model_batch and model_name in per_model_batch:
+        return per_model_batch[model_name]
+    return PER_MODEL_DEFAULT_BATCH.get(model_name, QWEN_DEFAULT_BATCH)
+
+
 # ---------------------------------------------------------------------------
 # Report assembly + evaluation
 # ---------------------------------------------------------------------------
@@ -496,7 +536,12 @@ def build_report(
 
 
 def evaluate_report(report: dict[str, Any]) -> dict[str, Any]:
-    """Golden-set acceptance: all assertions must pass, failures are listed."""
+    """Golden-set acceptance: all assertions must pass, failures are listed.
+
+    E4-EXEC-FIX FIX C: a PARTIAL report (a run failed mid-set and carries an
+    'error' entry instead of metrics) is tolerated — the failure is
+    documented as a listed failure, never a crash.
+    """
     failures: list[str] = []
     if not report.get("word_timestamps_present"):
         failures.append("word_timestamps_present: word-level timestamps missing")
@@ -518,6 +563,9 @@ def evaluate_report(report: dict[str, Any]) -> dict[str, Any]:
     for name in ("turbo_baseline", "qwen_baseline", "qwen_hotwords"):
         if name not in runs:
             failures.append(f"runs: missing {name}")
+        elif runs[name].get("error") is not None:
+            # E4-EXEC-FIX FIX C: partial report — document, don't crash
+            failures.append(f"runs: {name} failed with error: {runs[name]['error']}")
         elif not runs[name].get("ok"):
             failures.append(f"runs: {name} did not pass its in-run checks")
     regression = report.get("regression_hashes") or {}
@@ -529,6 +577,25 @@ def evaluate_report(report: dict[str, Any]) -> dict[str, Any]:
                 f"(expected {recorded_hash[:12]}..., got {str(run.get('transcript_hash'))[:12]}...)"
             )
     return {"all_pass": not failures, "failures": failures}
+
+
+def _write_partial_snapshot(
+    output_path: str,
+    runs: dict[str, dict[str, Any]],
+    failed_runs: dict[str, str],
+) -> None:
+    """E4-EXEC-FIX FIX C: incremental JSON dump written to output_path after
+    EVERY run — completed runs so far + the error of any failed run. A mid-set
+    OOM on run 2/3 therefore leaves a usable artefact (metrics + hashes)
+    instead of zero output."""
+    snapshot = {
+        "partial": True,
+        "completed_runs": sorted(runs),
+        "failed_runs": dict(failed_runs),
+        "runs": dict(runs),
+    }
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def run_golden_set(
@@ -543,6 +610,9 @@ def run_golden_set(
     diarize_fn: Callable[[Any, dict], dict] | None = None,
     audio_duration_fn: Callable[[str], float] | None = None,
     recorded_hashes: dict[str, str] | None = None,
+    batch_size: int | None = None,
+    per_model_batch: dict[str, int] | None = None,
+    free_fn: Callable[[], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Execute the full golden set (3 runs) and evaluate it. Injectable for CI.
 
@@ -551,6 +621,18 @@ def run_golden_set(
     diarize + assign_word_speakers). On the real GPU path each run starts
     with a CUDA peak-counter reset (vram_reset_real) so vram_peak_fn reads a
     per-run peak (FIX 7); CI mocks supply their own functions.
+
+    E4-EXEC-FIX fixes (observed on the real GPU run, deleg_ee3b69ea):
+    - FIX A: batch_size / per_model_batch are passed down to run_single
+      (defaults turbo 16, qwen 4 via resolve_batch_size) — the prod 64
+      freeze OOMed when free VRAM < 6 GiB.
+    - FIX B: free_fn (default free_gpu_real: gc.collect + empty_cache) is
+      called after EACH run, once the result has been extracted and stored —
+      models no longer accumulate across runs.
+    - FIX C: a partial snapshot (partial: true, completed runs + failed_runs
+      errors) is written to output_path after EVERY run; a run that raises
+      is recorded with its error string and the flow continues, so a mid-set
+      OOM leaves a usable artefact.
     """
     load_audio_fn = load_audio_fn or load_audio_real
     model_factory = model_factory or model_factory_real
@@ -558,28 +640,45 @@ def run_golden_set(
     diarize_fn = diarize_fn or default_diarize_fn
     vram_peak_fn = vram_peak_fn or vram_peak_real
     vram_reset_fn = vram_reset_real if vram_reset_fn is None else vram_reset_fn
+    free_fn = free_gpu_real if free_fn is None else free_fn
     audio_duration_fn = audio_duration_fn or audio_duration_real
 
     runs: dict[str, dict[str, Any]] = {}
+    failed_runs: dict[str, str] = {}
     words_speakers_ok = True
     all_fps: list[dict[str, Any]] = []
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     for name, spec in RUNS.items():
         vram_reset_fn()  # per-run VRAM peak (FIX 7)
-        run = run_single(
-            run_spec=spec,
-            audio_path=audio_path,
-            load_audio_fn=load_audio_fn,
-            model_factory=model_factory,
-            clock=clock,
-            align_fn=align_fn,
-            diarize_fn=diarize_fn,
-            vram_peak_fn=vram_peak_fn,
-        )
+        try:
+            run = run_single(
+                run_spec=spec,
+                audio_path=audio_path,
+                load_audio_fn=load_audio_fn,
+                model_factory=model_factory,
+                clock=clock,
+                align_fn=align_fn,
+                diarize_fn=diarize_fn,
+                vram_peak_fn=vram_peak_fn,
+                # E4-EXEC-FIX FIX A: batch passthrough (turbo 16 / qwen 4)
+                batch_size=resolve_batch_size(spec["whisper_model"], batch_size, per_model_batch),
+            )
+        except Exception as exc:  # E4-EXEC-FIX FIX C: document, keep going
+            failed_runs[name] = str(exc)
+            runs[name] = {"whisper_model": spec["whisper_model"], "ok": False, "error": str(exc)}
+            print(f"RUN FAILED: {name}: {exc}", flush=True)
+            _write_partial_snapshot(output_path, runs=runs, failed_runs=failed_runs)
+            free_fn()
+            continue
         runs[name] = run
         words_speakers_ok = words_speakers_ok and run["words_carry_speakers"]
         segments = _segments_from_transcript(run)
         if segments:
             all_fps.extend(find_hotword_false_positives(segments, HOTWORD_TERMS))
+        # E4-EXEC-FIX FIX C: incremental snapshot AFTER each completed run
+        # (result extracted and stored first, then VRAM released — FIX B)
+        _write_partial_snapshot(output_path, runs=runs, failed_runs=failed_runs)
+        free_fn()
 
     baseline_counts = count_hotword_occurrences(runs.get("qwen_baseline", {}).get("transcript", ""), HOTWORD_TERMS)
     hotwords_counts = count_hotword_occurrences(runs.get("qwen_hotwords", {}).get("transcript", ""), HOTWORD_TERMS)
@@ -632,17 +731,42 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="JSON file mapping model name -> expected transcript hash (6.2 bit-identical check)",
     )
+    # E4-EXEC-FIX FIX A/D: batch controls (execution parameters, predict.py
+    # untouched) — global override and per-model table (turbo 16, qwen 4).
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Override the batch for ALL runs (default: per-model, turbo 16 / qwen 4)",
+    )
+    parser.add_argument(
+        "--per-model-batch",
+        default=None,
+        help='JSON mapping model -> batch, e.g. \'{"large-v3-turbo": 16, "qwen3-asr": 4}\'',
+    )
     args = parser.parse_args(argv)
 
     recorded_hashes = {}
     if args.recorded_hashes:
         recorded_hashes = json.loads(Path(args.recorded_hashes).read_text())
 
+    per_model_batch = None
+    if args.per_model_batch:
+        try:
+            per_model_batch = json.loads(args.per_model_batch)
+            if not isinstance(per_model_batch, dict):
+                raise ValueError("must be a JSON object mapping model name -> batch")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"FAIL golden-set: invalid --per-model-batch JSON ({exc})", file=sys.stderr)
+            return 2
+
     try:
         report, evaluation = run_golden_set(
             audio_path=args.meeting_audio,
             output_path=args.output,
             recorded_hashes=recorded_hashes,
+            batch_size=args.batch_size,
+            per_model_batch=per_model_batch,
         )
     except ImportError as exc:
         print(

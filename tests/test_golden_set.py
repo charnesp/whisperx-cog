@@ -951,7 +951,14 @@ class TestFreeGpuBetweenRuns(unittest.TestCase):
     def _run_with_free_spy(self, free_events):
         def fake_run_single(run_spec, **kwargs):
             free_events.append(("run_end", run_spec["whisper_model"]))
-            return {"whisper_model": run_spec["whisper_model"], "ok": True, "transcript": "", "segments": []}
+            return {
+                "whisper_model": run_spec["whisper_model"],
+                "ok": True,
+                "transcript": "",
+                "segments": [],
+                "words_carry_speakers": True,
+                "word_timestamps_present": True,
+            }
 
         self.gs.run_single = fake_run_single
         calls = {"n": 0}
