@@ -236,8 +236,6 @@ def _parse_v2(text: str) -> dict[str, dict]:
             current[key] = value.strip("'\"")
             if key == "repo" and current_repo is None:
                 current_repo = value.strip("'\"").split("/", 1)[-1]
-            if key == "path" and in_files is False and current.get("files"):
-                pass
     if current is not None and current_repo:
         entries[current_repo] = current
     return entries

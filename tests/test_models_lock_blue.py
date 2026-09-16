@@ -33,7 +33,11 @@ def _build(root: Path, key: str) -> None:
     # count (the boot validator enforces size since E5-LOCK-SYNC).
     sizes = entry.get("sizes", {})
     for name in entry["expected_files"]:
-        (d / name).write_bytes(b"w" * sizes.get(name, 1))
+        # Sparse write (os.truncate): the v2 lock declares the REAL byte
+        # sizes (model.bin up to 3GB) — allocating b"w"*size in RAM would
+        # OOM the runner; fast_validate only os.stats each file.
+        with open(d / name, "wb") as fh:
+            fh.truncate(sizes.get(name, 1))
     (d / ".complete").write_text("")
 
 
