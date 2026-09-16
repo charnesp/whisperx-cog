@@ -29,7 +29,6 @@ and exits 0 only when evaluate_report() passes every assertion.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
 import json
 import re
@@ -70,7 +69,6 @@ _HOTWORD_CONTEXT_KEYWORDS = (
     "database",
     "api",
     "s3",
-    "cloud",
     "serveur",
     "sauvegarde",
     "backup",
@@ -88,7 +86,6 @@ _HOTWORD_CONTEXT_KEYWORDS = (
     "edge",
     "héberge",
     "hosting",
-    "cloud",
     "to",
     "téraoctet",
     "teraoctet",
@@ -302,6 +299,8 @@ def run_single(
         "duration_s": duration_s,
         "word_timestamps_present": word_timestamps_present(result),
         "words_carry_speakers": words_carry_speakers(result),
+        # raw segments kept so false-positive scanning can locate hotwords
+        "segments": (result or {}).get("segments") or [],
         "ok": word_timestamps_present(result) and words_carry_speakers(result),
     }
 
@@ -354,6 +353,12 @@ def model_factory_real(model_name: str):
         arch = predict.resolve_whisper_model_path(model_name)
         model = predict.whisperx.load_model(arch, predict.device, compute_type=predict.compute_type)
     return model
+
+
+def audio_duration_real(path: str) -> float:
+    """Audio duration in seconds via predict.get_audio_duration (ffmpeg probe)."""
+    predict = _load_predict()
+    return predict.get_audio_duration(path) / 1000.0
 
 
 def vram_peak_real() -> float:
@@ -431,12 +436,14 @@ def run_golden_set(
     model_factory: Callable | None = None,
     clock: Callable[[], float] = time.time,
     vram_peak_fn: Callable[[], float] | None = None,
+    audio_duration_fn: Callable[[str], float] | None = None,
     recorded_hashes: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Execute the full golden set (3 runs) and evaluate it. Injectable for CI."""
     load_audio_fn = load_audio_fn or load_audio_real
     model_factory = model_factory or model_factory_real
     vram_peak_fn = vram_peak_fn or vram_peak_real
+    audio_duration_fn = audio_duration_fn or audio_duration_real
 
     runs: dict[str, dict[str, Any]] = {}
     words_speakers_ok = True
@@ -459,12 +466,21 @@ def run_golden_set(
     hotwords_counts = count_hotword_occurrences(runs.get("qwen_hotwords", {}).get("transcript", ""), HOTWORD_TERMS)
     recall_report = build_hotword_recall_report(baseline_counts, hotwords_counts, HOTWORD_TERMS)
 
+    # RTFx from the qwen_hotwords run (the target configuration): audio
+    # seconds / processing seconds. Without an audio duration (CI mocks)
+    # rtfx stays None and evaluate_report flags it — the GPU host supplies it.
+    audio_duration_s = audio_duration_fn(audio_path) if audio_duration_fn else None
+    if audio_duration_s and runs.get("qwen_hotwords", {}).get("duration_s"):
+        rtfx = compute_rtfx(audio_duration_s, runs["qwen_hotwords"]["duration_s"])
+    else:
+        rtfx = None
+
     report = build_report(
         runs=runs,
         word_timestamps_present=all(r.get("word_timestamps_present") for r in runs.values()),
         words_carry_speakers=words_speakers_ok,
         vram_peak_gb=vram_peak_fn(),
-        rtfx=1.0,  # real RTFx needs the audio duration; refine at GPU execution
+        rtfx=rtfx,
         false_positives=all_fps,
         regression_hashes=recorded_hashes or {},
     )
@@ -478,9 +494,7 @@ def run_golden_set(
 
 
 def _segments_from_transcript(run: dict[str, Any]) -> list[dict]:
-    """Rebuild pseudo-segments for false-positive scanning from a stored run."""
-    # run_single keeps the raw transcript text; false-positive scanning needs
-    # segment boundaries. run_single stores them via 'segments' when present.
+    """Segments of a stored run (raw transcript segments from run_single)."""
     return run.get("segments") or []
 
 
@@ -505,14 +519,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.recorded_hashes:
         recorded_hashes = json.loads(Path(args.recorded_hashes).read_text())
 
-    with contextlib.suppress(Exception):
+    try:
         report, evaluation = run_golden_set(
             audio_path=args.meeting_audio,
             output_path=args.output,
             recorded_hashes=recorded_hashes,
         )
-        print(json.dumps(evaluation, ensure_ascii=False, indent=2))
-        return 0 if evaluation["all_pass"] else 1
+    except ImportError as exc:
+        print(
+            f"FAIL golden-set: GPU dependencies missing ({exc}) — run on the CUDA host, "
+            "unit tests cover this module GPU-free via tests/test_golden_set.py",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(evaluation, ensure_ascii=False, indent=2))
+    return 0 if evaluation["all_pass"] else 1
 
 
 if __name__ == "__main__":
