@@ -30,7 +30,10 @@ from models_registry import (
 
 BAKED_MODELS_ROOT = "/models"
 
-_WHISPER_KEYS = ("tiny", "large-v3", "large-v3-turbo")
+# Keys derived from the unified registry (single source of truth): the
+# faster-whisper keys are the non-qwen ones; the qwen keys carry their
+# own env_override in the registry.
+_WHISPER_KEYS = tuple(sorted(k for k, spec in MODELS.items() if not spec.env_override))
 
 WHISPER_MODEL_HF_IDS: dict[str, str] = {key: hf_repo(key) for key in _WHISPER_KEYS}
 
@@ -182,10 +185,12 @@ def resolve_whisper_model_path(whisper_model: str) -> str:
     try:
         return resolve_model_dir(key)
     except ModelNotProvisioned as exc:
-        legacy = ", ".join(local_candidates(key))
-        raise ModelNotProvisioned(
-            f"{exc} (legacy flat dirs also unavailable: {legacy})"
-        ) from None
+        # Only allege paths actually checked: the flat legacy dir
+        # ./models/<dirname> is tried inside resolve_model_dir (used as a
+        # real candidate in MODELS_MODE=dev); /models/<dirname> is a
+        # legacy layout this resolver never probes, so it must NOT be
+        # alleged here.
+        raise ModelNotProvisioned(str(exc)) from None
 
 
 def resolve_vad_source_path() -> str | None:

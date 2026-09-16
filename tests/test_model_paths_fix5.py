@@ -12,29 +12,23 @@ RED du cycle : les tests échouent tant que les constantes mortes
 existent et tant que le message allègue des chemins non testés.
 """
 
-import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
-from models_registry import MODELS  # noqa: E402
 
 from test_model_paths_failhard import mock_env  # noqa: E402
 
-WHISPER_KEYS = tuple(
-    k for k in sorted(MODELS) if k != "qwen3-forced-aligner-0.6b"
-)
+WHISPER_KEYS = ("large-v3", "large-v3-turbo", "tiny")  # non-qwen registry keys
 
 
 class TestNoDeadConstants(unittest.TestCase):
     def test_models_registry_has_no_unused_private_keys(self):
-        import models_registry
 
         src = (REPO_ROOT / "models_registry.py").read_text()
         self.assertNotIn("_WHISPER_KEYS", src)
