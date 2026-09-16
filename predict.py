@@ -23,6 +23,7 @@ from whisperx.diarize import DiarizationPipeline
 from json_sanitize import sanitize_error_message, sanitize_for_json
 from hf_token import require_diarization_token
 from model_paths import resolve_vad_source_path, resolve_whisper_model_path
+from models_lock import boot_validate as validate_boot_models
 from models_registry import (
     MODELS,
     local_candidates,
@@ -216,6 +217,12 @@ class Output(BaseModel):
 
 class Predictor(BasePredictor):
     def setup(self):
+        # Boot validation FIRST (E5-CODE-1 T2): fail-fast with a structured
+        # E_MODEL_NOT_PROVISIONED error + provisioner remediation before any
+        # other loading. An unprovisioned /models volume must crash-loop
+        # here, never reach a request with a deep HF_HUB_OFFLINE traceback.
+        validate_boot_models()
+
         destination_folder = "../root/.cache/torch"
         os.makedirs(destination_folder, exist_ok=True)
 
