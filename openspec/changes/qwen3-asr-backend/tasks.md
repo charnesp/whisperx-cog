@@ -34,6 +34,7 @@
 - [ ] 5.2 `models.lock`: pin HF revisions for `Qwen/Qwen3-ASR-1.7B` and `Qwen/Qwen3-ForcedAligner-0.6B`
 - [ ] 5.3 À ABANDONNER (bake `/models` dans l'image) — remplacé par le bind mount hôte + `scripts/provision.py` (plan E5 §2.2/§5.3-5.4 : poids provisionnés depuis `models.lock` v2, image code-only, `cog.yaml` dé-baké avec `HF_HUB_OFFLINE=1` + `TRANSFORMERS_OFFLINE=1`)
 - [ ] 5.4 Reformulé : build code-only (~2-3 GB au lieu de ~10+ GB baké) ; les poids vivent sur le mount `/models` provisionné, pas dans l'image
+- [ ] 5.5 Annotation dépendance (revue E5-CODE, P6 fail-fast — HORS périmètre code) : le fail-fast de `setup()` (exit/crash-loop) reste conditionnel au comportement de la version Cog visée — précondition P6 du plan E5, vérifiée empiriquement au smoke C-6 (volume `/models` vide). Si 500-only : le watchdog (restart/OOM) devient le déclencheur, et un préflight entrypoint conditionnel au smoke C-6 est envisagé (cf. plan E5 §8 piège 1). Rien à implémenter côté code dans ce change.
 
 ## 6. Golden set (GPU, scripted, replayable)
 

@@ -19,8 +19,11 @@ Subcommands:
   gc        --model <key> [--apply]  keep-2, dry-run by default
 
 Dev usage: uv run scripts/provision.py <subcommand> ...
-Prod usage: image ghcr.io/charnesp/whisperx-provisioner:<ver> (T4b, Dockerfile
-separate from the runtime image — out of scope of the immediate code change).
+Prod usage: image ghcr.io/charnesp/whisperx-provisioner:latest (T4b,
+Dockerfile separate from the runtime image — out of scope of the
+immediate code change; :latest is the deliberate pin, matching the
+remediation strings in model_paths.py / models_lock.py — the
+provisioner image is versioned by the GHCR sha tag at deploy time).
 """
 
 from __future__ import annotations
@@ -337,25 +340,6 @@ def state_previous_sha(models_root: Path, model: str, exclude: str | None) -> st
     return last_other
 
 
-def state_history_shas(models_root: Path, model: str) -> set[str]:
-    """Revisions previously active for this model (protected by GC keep-2)."""
-    history = models_root / STATE_DIRNAME / HISTORY_FILE
-    if not history.exists():
-        return set()
-    shas: set[str] = set()
-    for line in history.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if rec.get("model") == model and rec.get("sha"):
-            shas.add(rec["sha"])
-    return shas
-
-
 def record_deployed_lock(
     models_root: Path, shas_by_model: dict[str, str], ts: int | None = None
 ) -> None:
@@ -567,7 +551,7 @@ def verify_command(argv, models_root: Path | None = None, staging_root: Path | N
             f"E_MODEL_NOT_PROVISIONED model={args.model} rev={revision} path={dest_dir} "
             "(no .complete marker)\n"
             "remédiation: docker run --rm -v /files/data/whisperx-cog/models:/models "
-            "ghcr.io/charnesp/whisperx-provisioner:<ver> provision --model " + args.model
+            "ghcr.io/charnesp/whisperx-provisioner:latest provision --model " + args.model
         )
 
     files = lock_files_to_fetch(entry)
