@@ -1,5 +1,9 @@
 # Build the Cog Docker image and push to GitHub Container Registry (GHCR)
 # https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry
+#
+# T7 (plan E5 §4): buildable depuis feat/qwen3-asr-backend sans merge.
+# Tags: sha-<short8> (immuable, pin compose), canary, feat-qwen3-asr-backend.
+# :latest UNIQUEMENT depuis main/master (jamais depuis une branche).
 
 name: Build and push Docker image
 
@@ -8,6 +12,7 @@ on:
     branches:
       - main
       - master
+      - "feat/**"
   workflow_dispatch:
 
 env:
@@ -31,6 +36,25 @@ jobs:
           docker system prune -af || true
           df -h
 
+      - name: Compute tags
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          MAIN_SHA="${GITHUB_REF::12}"
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          TAGS="$IMAGE:sha-$SHORT_SHA $IMAGE:canary"
+          if [ "$MAIN_SHA" = "refs/heads/m" ]; then
+            TAGS="$TAGS $IMAGE:latest"
+          fi
+          if [ "${GITHUB_REF_NAME}" = "feat/qwen3-asr-backend" ]; then
+            TAGS="$TAGS $IMAGE:feat-qwen3-asr-backend"
+          fi
+          {
+            echo "IMAGE=$IMAGE"
+            echo "TAGS=$TAGS"
+            echo "IS_MAIN=$([ "$MAIN_SHA" = "refs/heads/m" ] && echo true || echo false)"
+            echo "SHORT_SHA=$SHORT_SHA"
+          } >> "$GITHUB_ENV"
+
       - name: Setup Cog
         uses: replicate/setup-cog@v2
         with:
@@ -41,9 +65,6 @@ jobs:
       - name: Use default Docker builder
         run: docker buildx use default
 
-      - name: Set image name (lowercase for GHCR)
-        run: echo "IMAGE_NAME=${{ env.REGISTRY }}/$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
@@ -52,12 +73,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build image with Cog
-        run: cog build --progress=plain -t ${{ env.IMAGE_NAME }}:${{ github.sha }}
+        run: cog build --progress=plain -t ${{ env.IMAGE }}:sha-${{ env.SHORT_SHA }}
 
-      - name: Tag image as latest
-        run: docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:latest
+      - name: Tag additional refs (latest=false hors main)
+        run: |
+          for t in $TAGS; do
+            docker tag "$IMAGE:sha-$SHORT_SHA" "$t"
+          done
+          echo "Tags computed: $TAGS"
 
       - name: Push image to GHCR
         run: |
-          docker push ${{ env.IMAGE_NAME }}:latest
-          docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          for t in $TAGS; do
+            docker push "$t"
+          done
