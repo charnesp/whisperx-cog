@@ -599,6 +599,12 @@ def verify_command(argv, models_root: Path | None = None, staging_root: Path | N
         src_dir = Path(args.from_dir)
         stage_dir = (staging_root or root / ".." / "staging") / f"{args.model}-repair-{os.getpid()}"
         stage_dir.parent.mkdir(parents=True, exist_ok=True)
+        # FIX 3: invalidate the .complete marker BEFORE touching any file —
+        # a concurrent reader must never see a "complete" snapshot holding a
+        # faulty file. The marker is rewritten AFTER fsync (complete-last
+        # semantics, same as provision_one).
+        marker.unlink(missing_ok=True)
+        fsync_dir(dest_dir)
         with acquire_lock(root, args.model):
             try:
                 # Remove the faulty file(s) then re-provision from source.
@@ -620,6 +626,12 @@ def verify_command(argv, models_root: Path | None = None, staging_root: Path | N
                         raise CommandError(
                             f"repair failed for {path}: expected {_expected}, got {actual}"
                         )
+                fsync_dir(dest_dir)
+                # All repaired files are durable: restore the marker LAST.
+                with marker.open("w") as fh:
+                    fh.write("ok\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
                 fsync_dir(dest_dir)
             except CommandError:
                 shutil.rmtree(stage_dir, ignore_errors=True)
