@@ -503,6 +503,124 @@ class TestAlignDiarizeWiring(unittest.TestCase):
         self.assertFalse(run["word_timestamps_present"])
         self.assertFalse(run["words_carry_speakers"])
 
+    # ------------------------------------------------------------------
+    # E4-FIX-2 FIX 1 (🔴): the raw transcribe result NEVER carries
+    # 'whisper_model' (asr_qwen returns {segments, language} only), yet
+    # default_align_fn dispatches on result.get('whisper_model') — on a real
+    # GPU qwen run the wav2vec2 (standard) branch would be taken instead of
+    # predict.align_qwen (crash/incompatibility). run_single must inject the
+    # model name into the result it hands to align_fn, and default_align_fn
+    # must route the qwen branch from that injected key.
+    # ------------------------------------------------------------------
+
+    def test_run_single_hands_model_name_to_align_fn_result(self):
+        seen = {}
+
+        def spy_align(audio, result):
+            seen["result"] = result
+            return result
+
+        def passthrough(audio, result):
+            return result
+
+        self._run("qwen3-asr", spy_align, passthrough)
+        self.assertEqual(
+            seen["result"].get("whisper_model"),
+            "qwen3-asr",
+            "raw transcribe result lacks 'whisper_model' — run_single must inject it so default_align_fn can dispatch",
+        )
+        seen.clear()
+        self._run("large-v3-turbo", spy_align, passthrough)
+        self.assertEqual(seen["result"].get("whisper_model"), "large-v3-turbo")
+
+    def _mock_predict_env(self):
+        """Fake predict module (align/align_qwen spies) + fake whisperx.alignment."""
+        import sys
+        import types
+
+        calls = {"align_qwen": 0, "align": 0}
+        words = [{"word": "x", "start": 0.0, "end": 0.4}]
+
+        class FakePredict:
+            @staticmethod
+            def align_qwen(audio, result, debug):
+                calls["align_qwen"] += 1
+                for seg in result.get("segments") or []:
+                    seg["words"] = [dict(w) for w in words]
+                return result
+
+            @staticmethod
+            def align(audio, result, debug):
+                calls["align"] += 1
+                for seg in result.get("segments") or []:
+                    seg["words"] = [dict(w) for w in words]
+                return result
+
+            @staticmethod
+            def format_qwen_context(hotwords):
+                return "", 0
+
+        fake_alignment = types.ModuleType("whisperx.alignment")
+        fake_alignment.DEFAULT_ALIGN_MODELS_TORCH = {"fr": "wav2vec2-fr"}
+        fake_alignment.DEFAULT_ALIGN_MODELS_HF = {}
+
+        saved_loader = self.gs._load_predict
+        saved_modules = {k: sys.modules.get(k) for k in ("whisperx", "whisperx.alignment")}
+        self.gs._load_predict = lambda: FakePredict()
+        import types as _types
+
+        sys.modules["whisperx"] = _types.ModuleType("whisperx")
+        sys.modules["whisperx.alignment"] = fake_alignment
+
+        def restore():
+            self.gs._load_predict = saved_loader
+            for key, value in saved_modules.items():
+                if value is None:
+                    sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = value
+
+        self.addCleanup(restore)
+        return calls
+
+    def test_default_align_fn_dispatches_from_raw_transcribe_result(self):
+        """Raw BRUT result {'segments', 'language'} (no whisper_model key)
+        flowing through run_single -> default_align_fn (predict mocked):
+        qwen3-asr must take the align_qwen branch, large-v3-turbo the
+        standard align branch (language coverage guard)."""
+        calls = self._mock_predict_env()
+
+        class FakeModel:
+            def transcribe(self, audio, batch_size=None, **kwargs):
+                # BRUT transcribe output: asr_qwen returns {segments, language} ONLY
+                return {
+                    "language": "fr",
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "Backblaze est un bucket."}],
+                }
+
+        common = dict(
+            audio_path="x.ogg",
+            load_audio_fn=lambda p: [0.0] * 16,
+            model_factory=lambda name: FakeModel(),
+            clock=lambda: 0.0,
+            align_fn=self.gs.default_align_fn,
+            diarize_fn=lambda audio, result: result,
+        )
+        run_q = self.gs.run_single(run_spec={"whisper_model": "qwen3-asr", "hotwords": None}, **common)
+        self.assertGreater(
+            calls["align_qwen"],
+            0,
+            "qwen raw transcribe result must route to predict.align_qwen (wav2vec2 incompatible with qwen outputs)",
+        )
+        self.assertEqual(calls["align"], 0, "qwen path must NOT use the wav2vec2 standard aligner")
+        self.assertTrue(run_q["word_timestamps_present"])
+
+        self._mock_predict_env_calls = calls  # same spies continue
+        run_t = self.gs.run_single(run_spec={"whisper_model": "large-v3-turbo", "hotwords": None}, **common)
+        self.assertGreater(calls["align"], 0, "turbo path must use the standard aligner")
+        self.assertEqual(calls["align_qwen"], 1, "turbo path must NOT use the Qwen ForcedAligner")
+        self.assertTrue(run_t["word_timestamps_present"])
+
     def test_real_defaults_resolve_predict_align_and_diarize(self):
         # Real (GPU) defaults must exist and route to predict's align functions:
         # align_fn default dispatches align_qwen on qwen / align on turbo;
@@ -632,6 +750,42 @@ class TestVramPerRun(unittest.TestCase):
         self.assertEqual(report["vram_peak_by_run"]["qwen_hotwords"], 4.99)
         self.assertEqual(report["vram_peak_gb"], 4.99)
         self.assertIn("vram_peak_by_run", report)
+
+    def test_build_report_vram_peak_gb_is_global_max_across_runs(self):
+        # E4-FIX-2 FIX 2 (🟡): the report's vram_peak_gb is the TRUE global
+        # peak = max over the per-run peaks, not the last vram_peak_fn()
+        # reading (which is the peak of the LAST run only).
+        runs = {
+            "turbo_baseline": {"ok": True, "transcript_hash": "a" * 64, "vram_peak_gb": 3.1},
+            "qwen_baseline": {"ok": True, "transcript_hash": "b" * 64, "vram_peak_gb": 5.9},
+            "qwen_hotwords": {"ok": True, "transcript_hash": "c" * 64, "vram_peak_gb": 4.2},
+        }
+        report = self.gs.build_report(
+            runs=runs,
+            word_timestamps_present=True,
+            words_carry_speakers=True,
+            vram_peak_gb=3.1,  # stale last-read value; must be overridden by the max
+            rtfx=52.0,
+            false_positives=[],
+        )
+        self.assertAlmostEqual(report["vram_peak_gb"], 5.9)
+        self.assertEqual(
+            report["vram_peak_by_run"],
+            {"turbo_baseline": 3.1, "qwen_baseline": 5.9, "qwen_hotwords": 4.2},
+        )
+
+    def test_build_report_vram_peak_gb_falls_back_when_no_per_run_peaks(self):
+        # CI mocks without vram_peak_fn: no per-run peaks -> keep the
+        # supplied scalar (backward compatible).
+        report = self.gs.build_report(
+            runs={},
+            word_timestamps_present=True,
+            words_carry_speakers=True,
+            vram_peak_gb=4.99,
+            rtfx=52.0,
+            false_positives=[],
+        )
+        self.assertAlmostEqual(report["vram_peak_gb"], 4.99)
 
     def test_vram_peak_real_resets_and_reads_peak(self):
         # vram_peak_real must call reset (before run) + read peak (after run):
