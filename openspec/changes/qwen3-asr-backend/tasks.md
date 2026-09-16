@@ -37,7 +37,7 @@
 
 ## 6. Golden set (GPU, scripted, replayable)
 
-- [ ] 6.1 Script a replayable golden-set harness: fixed FR extract + 2026-09-02 real meeting extract; turbo baseline, qwen baseline, qwen+hotwords runs
+- [x] 6.1 Script a replayable golden-set harness: fixed FR extract + 2026-09-02 real meeting extract; turbo baseline, qwen baseline, qwen+hotwords runs <!-- script + tests livrés (166/166 verts, CI GPU-free via injection); exécution GPU en attente (6.6) -->
 - [ ] 6.2 faster-whisper regression: `tiny`, `large-v3`, `large-v3-turbo` outputs bit-identical to pre-change
 - [ ] 6.3 qwen baseline vs qwen+hotwords: proper-noun recall AND false positives (segments that should not contain the hotword names — no hallucinated insertions)
 - [ ] 6.4 hotwords absent → qwen output bit-identical to the 2026-09-15 baseline run
@@ -80,4 +80,48 @@
    `batch_size or self._batch_size` fallback — None reached the transformers
    pipeline (effective batch 1). predict.py now passes 64 explicitly on the
    whisper path when batch_size is absent (invariance tests added).
+-->
+
+<!-- E4-FIX review deviations (commits RED/GREEN/BLUE of the E4-HARNESS
+     APPROVED_WITH_FIXES cycle, 1🔴 + 6🟡):
+
+1. FIX 1 (🔴) 6.5 wiring implemented (option wiring retenue, pas l'option
+   périmètre): run_single branches align (default_align_fn: predict.
+   align_qwen on the qwen path / predict.align with the language-coverage
+   guard on the turbo path) then diarize (default_diarize_fn:
+   predict.diarize, ending with whisperx.assign_word_speakers) — both
+   injectable (align_fn / diarize_fn) with real GPU defaults and CI mocks.
+   6.5 is now actually executable: the wiring produces the words/speaker
+   keys the gates check. words_carry_speakers tightened: a segment without
+   words is False (no vacuous pass).
+
+2. FIX 2 (🟡) RED deviation documented: the INITIAL 6.1 RED used
+   skipUnless (skip, not a failure). The E4-FIX cycle ran a REAL RED: the
+   wiring tests were executed without implementation and failed for real
+   (TypeError: run_single() got an unexpected keyword argument 'align_fn',
+   + 9 sibling errors, 3 assertion failures on default_align_fn /
+   vram_reset_real / per-run VRAM gate). Failure log in the RED commit
+   message.
+
+3. FIX 3 (🟡) 6.1 checked ONLY with the HTML annotation above: script +
+   tests delivered, GPU execution still pending (6.6 on the 4080).
+
+4. FIX 4 (🟡) BLUE dedupe corrected: ONE 'cloud' entry restored in
+   _HOTWORD_CONTEXT_KEYWORDS (the E3 dedupe removed both occurrences; a
+   context tuple keeps one).
+
+5. FIX 5 (🟡) 6.2 hash semantics changed: hash_segments() = SHA-256 of the
+   canonical JSON (sort_keys) of the FULL segments — text/start/end plus
+   words (word/start/end/speaker when present). The invariance now covers
+   segments+words+speakers, not transcript text only; hash_transcript kept
+   for the text-level invariance (6.4).
+
+6. FIX 6 (🟡) hard gates: missing ruff / pip-audit now FAIL the gate
+   (exit 1 with install message) instead of SKIP+exit 0 — verified with
+   RUFF/PIP_AUDIT pointing at a non-existent binary.
+
+7. FIX 7 (🟡) per-run VRAM: vram_reset_real (reset_peak_memory_stats) at
+   the start of every run, vram_peak_real (max_memory_allocated) at the
+   end; report carries vram_peak_by_run per run + global vram_peak_gb;
+   evaluate_report fails if a single run exceeds 5.5 GB.
 -->
