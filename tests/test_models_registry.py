@@ -179,15 +179,16 @@ class TestPredictConsumesRegistry(unittest.TestCase):
         return install()
 
     def test_predict_qwen_paths_come_from_registry(self):
+        """T3: predict resolves through model_paths.resolve_model_dir; the
+        registry remains the single source of the legacy candidate layout."""
+        import model_paths
         from models_registry import local_candidates
 
-        predict = self._predict()
+        self._predict()
         self.assertEqual(
-            predict.QWEN_MODEL_LOCAL_PATHS, local_candidates("qwen3-asr-1.7b")
-        )
-        self.assertEqual(
-            predict.QWEN_ALIGNER_LOCAL_PATHS,
-            local_candidates("qwen3-forced-aligner-0.6b"),
+            model_paths.WHISPER_MODEL_LOCAL_PATHS,
+            {key: local_candidates(key)
+             for key in ("tiny", "large-v3", "large-v3-turbo")},
         )
 
     def test_predict_weight_files_come_from_registry(self):

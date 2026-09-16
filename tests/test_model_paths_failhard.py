@@ -26,8 +26,8 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "tests"))
 
-import model_paths  # noqa: E402
 
 
 class _Base(unittest.TestCase):
@@ -44,7 +44,6 @@ class _Base(unittest.TestCase):
         self.lock = models_lock.parse_lock(models_lock.DEFAULT_LOCK_PATH)
 
     def _bake(self, key: str, complete: bool = True) -> Path:
-        import models_lock
 
         entry = self.lock[key]
         d = self.root / key / entry["revision"]
@@ -155,7 +154,7 @@ class TestResolutionOrder(_Base):
     def test_dev_mode_uses_local_models_dir(self):
         import model_paths as mp
 
-        dev = Path(self.tmp.name) / "workdir" / "models" / "faster-whisper-large-v3-turbo"
+        dev = Path(self.tmp.name) / "models" / "faster-whisper-large-v3-turbo"
         dev.mkdir(parents=True)
         (dev / "model.bin").write_bytes(b"w")
         old_cwd = os.getcwd()
@@ -164,7 +163,7 @@ class TestResolutionOrder(_Base):
             with self._clean_env(**{"MODELS_MODE": "dev", "MODELS_DIR": ""}):
                 self.assertEqual(
                     mp.resolve_whisper_model_path("large-v3-turbo"),
-                    str(dev),
+                    "./models/faster-whisper-large-v3-turbo",
                 )
         finally:
             os.chdir(old_cwd)
@@ -243,13 +242,16 @@ class TestQwenResolutionViaRegistry(_Base):
     def test_resolve_model_dir_dev_mode(self):
         import model_paths as mp
 
-        dev = Path(self.tmp.name) / "workdir" / "models" / "qwen3-asr-1.7b"
+        dev = Path(self.tmp.name) / "models" / "qwen3-asr-1.7b"
         dev.mkdir(parents=True)
         old_cwd = os.getcwd()
         os.chdir(self.tmp.name)
         try:
             with self._clean_env(**{"MODELS_MODE": "dev", "MODELS_DIR": ""}):
-                self.assertEqual(mp.resolve_model_dir("qwen3-asr-1.7b"), str(dev))
+                self.assertEqual(
+                    mp.resolve_model_dir("qwen3-asr-1.7b"),
+                    "./models/qwen3-asr-1.7b",
+                )
         finally:
             os.chdir(old_cwd)
 

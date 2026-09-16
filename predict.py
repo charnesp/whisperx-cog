@@ -22,11 +22,14 @@ import whisperx
 from whisperx.diarize import DiarizationPipeline
 from json_sanitize import sanitize_error_message, sanitize_for_json
 from hf_token import require_diarization_token
-from model_paths import resolve_vad_source_path, resolve_whisper_model_path
+from model_paths import (
+    resolve_model_dir,
+    resolve_vad_source_path,
+    resolve_whisper_model_path,
+)
 from models_lock import boot_validate as validate_boot_models
 from models_registry import (
     MODELS,
-    local_candidates,
     resolve_key as _resolve_model_key,
 )
 import tempfile
@@ -52,10 +55,9 @@ _QWEN_MODEL_KEY = _resolve_model_key(QWEN_MODEL_NAME)
 _QWEN_ALIGNER_KEY = "qwen3-forced-aligner-0.6b"
 QWEN_ASR_HF_REPO = MODELS[_QWEN_MODEL_KEY].hf_repo
 QWEN_ALIGNER_HF_REPO = MODELS[_QWEN_ALIGNER_KEY].hf_repo
-# Local snapshot dirs baked into /models (see models.lock revisions)
-QWEN_MODEL_LOCAL_PATHS = local_candidates(_QWEN_MODEL_KEY)
-QWEN_ALIGNER_LOCAL_PATHS = local_candidates(_QWEN_ALIGNER_KEY)
-# Non-empty weight files that must exist in each baked snapshot
+# Snapshot dirs come from model_paths.resolve_model_dir (fail-HARD, T3):
+# env override → lock /models/<key>/<sha40>/ → ./models dev → raise.
+# Non-empty weight files that must exist in each snapshot
 QWEN_ASR_WEIGHT_FILES = list(MODELS[_QWEN_MODEL_KEY].weight_files)
 QWEN_ALIGNER_WEIGHT_FILES = list(MODELS[_QWEN_ALIGNER_KEY].weight_files)
 
@@ -190,12 +192,19 @@ def assert_baked_qwen_weights(snapshot_dir: str, weight_files=None) -> None:
         )
 
 
+_QWEN_ALIGNER_LOCAL_PATHS_SENTINEL = ["qwen3-forced-aligner-0.6b"]
+
+
 def resolve_qwen_snapshot_dir(candidates=None) -> str:
-    """Return the first existing baked/local qwen snapshot dir, else the baked path."""
-    for path in candidates or QWEN_MODEL_LOCAL_PATHS:
-        if os.path.isdir(path):
-            return path
-    return candidates[0] if candidates else QWEN_MODEL_LOCAL_PATHS[0]
+    """Back-compat shim: fail-HARD registry resolution (T3).
+
+    Delegates to model_paths.resolve_model_dir (env override → lock
+    /models/<key>/<sha40>/ → ./models dev → ModelNotProvisioned, never a
+    HF fallback). The `candidates` argument is ignored: the registry is
+    the single source of truth.
+    """
+    key = _QWEN_ALIGNER_KEY if candidates else _QWEN_MODEL_KEY
+    return resolve_model_dir(key)
 
 
 def _resolve_input_default(val: Any) -> Any:
@@ -724,7 +733,7 @@ def align_qwen(audio, result, debug):
     baked /models snapshot (wav2vec2 is incompatible with qwen outputs)."""
     start_time = time.time_ns() / 1e9
 
-    aligner_snapshot_dir = resolve_qwen_snapshot_dir(QWEN_ALIGNER_LOCAL_PATHS)
+    aligner_snapshot_dir = resolve_qwen_snapshot_dir(_QWEN_ALIGNER_LOCAL_PATHS_SENTINEL)
     assert_baked_qwen_weights(aligner_snapshot_dir, QWEN_ALIGNER_WEIGHT_FILES)
     print(f"Qwen forced aligner snapshot: {aligner_snapshot_dir}", flush=True)
 
