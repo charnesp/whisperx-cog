@@ -1,20 +1,25 @@
 """GPU-free unit tests for the golden-set harness (scripts/golden_set.py).
 
 The harness itself drives real GPU runs (task 6.1 of tasks.md: replayable
-golden set on the 4080). These tests cover only its pure/GPU-free helpers:
+golden set on the 4080). These tests cover its pure/GPU-free helpers and the
+injectable run flow (align / diarize / assign_word_speakers wiring via
+align_fn / diarize_fn params, GPU-free mocks for CI):
 - transcript hashing (bit-identical regression checks)
 - hotword recall + false-positive counting on transcripts
 - word-level timestamp verification
-- word-speakier handoff verification (assign_word_speakers receives ForcedAligner words)
-- VRAM / RTFx metric evaluation
+- word-speaker handoff verification (assign_word_speakers receives ForcedAligner words)
+- align/diarize wiring inside run_single (RED tests for the E4-FIX cycle)
+- canonical segment hashing (6.2: words/start/end/speaker included)
+- VRAM / RTFx metric evaluation (incl. per-run VRAM peak, FIX 7)
 - golden-set run evaluation and JSON report building
-- main() exit codes and --check-only mode without GPU
+- main() exit codes without GPU
 
 scripts/golden_set.py must exist (this is the RED assertion of task 6.1).
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -377,6 +382,285 @@ class TestHarnessGpuFree(unittest.TestCase):
             false_positives=[],
         )
         json.dumps(report)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# RED tests — E4-FIX cycle (wiring align/diarize inside run_single)
+# Written WITHOUT implementation: run_single has no align_fn/diarize_fn
+# params yet, so every assertion below fails (observed RED, documented in
+# tasks.md deviations).
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestAlignDiarizeWiring(unittest.TestCase):
+    """FIX 1 (🔴): run_single must wire align + diarize + assign_word_speakers.
+
+    The pipeline (mirrors predict._run_predict): after transcribe,
+    align (align_qwen on the qwen path / align standard on the turbo path)
+    produces word-level timestamps, then diarize produces speaker turns and
+    whisperx.assign_word_speakers labels the aligned words. Without this
+    wiring, word_timestamps_present / words_carry_speakers are False on a
+    real GPU run and the harness fails its own gate (6.5 not executable).
+    Both functions are injectable (align_fn, diarize_fn) so CI can exercise
+    the wiring GPU-free; the real defaults wrap predict.align / align_qwen /
+    diarize.
+    """
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    @staticmethod
+    def _fake_model(model_name, align_called, diarize_called):
+        class FakeModel:
+            def transcribe(self, audio, batch_size=None, **kwargs):
+                return {
+                    "language": "fr",
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "Backblaze est un bucket."}],
+                }
+
+        return FakeModel()
+
+    def _run(self, model_name, align_fn, diarize_fn):
+        captured = {"align": None, "diarize": None}
+
+        def load_audio(path):
+            return [0.0] * 16
+
+        class FakeModel:
+            def transcribe(self, audio, batch_size=None, **kwargs):
+                return {
+                    "language": "fr",
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "Backblaze est un bucket."}],
+                }
+
+        def clock():
+            return 0.0
+
+        run = self.gs.run_single(
+            run_spec={"whisper_model": model_name, "hotwords": None},
+            audio_path="x.ogg",
+            load_audio_fn=load_audio,
+            model_factory=lambda name: FakeModel(),
+            clock=clock,
+            align_fn=align_fn,
+            diarize_fn=diarize_fn,
+        )
+        return run, captured
+
+    def test_run_single_accepts_injected_align_and_diarize(self):
+        calls = {"align": 0, "diarize": 0}
+
+        def fake_align(audio, result):
+            calls["align"] += 1
+            result["segments"][0]["words"] = [{"word": "Backblaze", "start": 0.0, "end": 0.4}]
+            return result
+
+        def fake_diarize(audio, result):
+            calls["diarize"] += 1
+            for seg in result["segments"]:
+                for w in seg.get("words") or []:
+                    w["speaker"] = "SPEAKER_00"
+            return result
+
+        run, captured = self._run("qwen3-asr", fake_align, fake_diarize)
+        self.assertEqual(calls["align"], 1, "align must be called once per run")
+        self.assertEqual(calls["diarize"], 1, "diarize must be called once per run")
+        self.assertTrue(run["word_timestamps_present"])
+        self.assertTrue(run["words_carry_speakers"])
+        self.assertTrue(run["ok"])
+
+    def test_align_qwen_used_on_qwen_path_and_align_on_turbo_path(self):
+        used = {}
+
+        def align_qwen(audio, result):
+            used["align"] = "align_qwen"
+            result["segments"][0]["words"] = [{"word": "x", "start": 0.0, "end": 0.4}]
+            return result
+
+        def align_standard(audio, result):
+            used["align"] = "align"
+            result["segments"][0]["words"] = [{"word": "x", "start": 0.0, "end": 0.4}]
+            return result
+
+        def fake_diarize(audio, result):
+            for seg in result["segments"]:
+                for w in seg.get("words") or []:
+                    w["speaker"] = "SPEAKER_00"
+            return result
+
+        self._run("qwen3-asr", align_qwen, fake_diarize)
+        self.assertEqual(used["align"], "align_qwen", "qwen path must use the Qwen ForcedAligner")
+        used.clear()
+        self._run("large-v3-turbo", align_standard, fake_diarize)
+        self.assertEqual(used["align"], "align", "turbo path must use the standard aligner")
+
+    def test_run_single_without_align_wiring_fails_its_own_gate(self):
+        # The pre-fix behavior (the bug): transcribe output carries no
+        # words/speaker, so run ok must be False — proves the gate is real.
+        run, _ = self._run("qwen3-asr", None, None)
+        self.assertFalse(run["ok"])
+        self.assertFalse(run["word_timestamps_present"])
+        self.assertFalse(run["words_carry_speakers"])
+
+    def test_real_defaults_resolve_predict_align_and_diarize(self):
+        # Real (GPU) defaults must exist and route to predict's align functions:
+        # align_fn default dispatches align_qwen on qwen / align on turbo;
+        # diarize_fn default wraps predict.diarize.
+        self.assertTrue(hasattr(self.gs, "default_align_fn"))
+        self.assertTrue(hasattr(self.gs, "default_diarize_fn"))
+        import inspect
+
+        src_align = inspect.getsource(self.gs.default_align_fn)
+        src_diarize = inspect.getsource(self.gs.default_diarize_fn)
+        self.assertIn("align_qwen", src_align)
+        self.assertIn("align(", src_align)
+        self.assertIn("diarize", src_diarize)
+        self.assertIn("assign_word_speakers", src_diarize)
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestCanonicalSegmentHashing(unittest.TestCase):
+    """FIX 5 (🟡): 6.2 regression hash = SHA-256 of the canonical JSON of the
+    full segments (text/start/end + words incl. speaker when present), not
+    text-only — the invariance now covers words and speaker labels."""
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    def test_hash_segments_deterministic(self):
+        segments = [
+            {
+                "start": 0.0,
+                "end": 1.0,
+                "text": "Bonjour",
+                "words": [{"word": "Bonjour", "start": 0.0, "end": 0.5, "speaker": "SPEAKER_00"}],
+                "speaker": "SPEAKER_00",
+            }
+        ]
+        self.assertEqual(
+            self.gs.hash_segments(segments),
+            self.gs.hash_segments(json.loads(json.dumps(segments))),
+        )
+
+    def test_hash_segments_matches_canonical_json_sha256(self):
+        segments = [{"start": 0.0, "end": 1.0, "text": "Bonjour", "words": [], "speaker": "SPEAKER_00"}]
+        expected = hashlib.sha256(
+            json.dumps(segments, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(self.gs.hash_segments(segments), expected)
+
+    def test_hash_segments_changes_when_words_change(self):
+        base = [{"start": 0.0, "end": 1.0, "text": "Bonjour", "words": [{"word": "Bonjour", "start": 0.0, "end": 0.5}]}]
+        changed = [{"start": 0.0, "end": 1.0, "text": "Bonjour", "words": [{"word": "Bonjour", "start": 0.1, "end": 0.5}]}]
+        self.assertNotEqual(self.gs.hash_segments(base), self.gs.hash_segments(changed))
+
+    def test_hash_segments_changes_when_speaker_changes(self):
+        base = [{"start": 0.0, "end": 1.0, "text": "Bonjour", "words": [{"word": "Bonjour", "start": 0.0, "end": 0.5, "speaker": "SPEAKER_00"}]}]
+        changed = [{"start": 0.0, "end": 1.0, "text": "Bonjour", "words": [{"word": "Bonjour", "start": 0.0, "end": 0.5, "speaker": "SPEAKER_01"}]}]
+        self.assertNotEqual(self.gs.hash_segments(base), self.gs.hash_segments(changed))
+
+    def test_run_single_stores_segment_hash(self):
+        segments = [{"start": 0.0, "end": 1.0, "text": "Backblaze est un bucket.", "words": [], "speaker": "SPEAKER_00"}]
+
+        class FakeModel:
+            def transcribe(self, audio, batch_size=None, **kwargs):
+                return {"language": "fr", "segments": segments}
+
+        run = self.gs.run_single(
+            run_spec={"whisper_model": "qwen3-asr", "hotwords": None},
+            audio_path="x.ogg",
+            load_audio_fn=lambda p: [0.0],
+            model_factory=lambda name: FakeModel(),
+            clock=lambda: 0.0,
+            align_fn=lambda audio, result: result,
+            diarize_fn=lambda audio, result: result,
+        )
+        expected = self.gs.hash_segments(segments)
+        self.assertEqual(run["segments_hash"], expected)
+
+    def test_transcript_hash_backward_compatible(self):
+        # hash_transcript stays available (text-level invariance on 6.4).
+        self.assertEqual(
+            self.gs.hash_transcript("Bonjour"),
+            hashlib.sha256("Bonjour".encode("utf-8")).hexdigest(),
+        )
+
+
+@unittest.skipUnless(GOLDEN_SET_PATH.is_file(), "scripts/golden_set.py does not exist yet (RED)")
+class TestVramPerRun(unittest.TestCase):
+    """FIX 7 (🟡): per-run VRAM peak via injectable vram_peak_fn, reset at the
+    start of each run (reset_peak_memory_stats) and read at the end
+    (max_memory_allocated)."""
+
+    def setUp(self):
+        self.gs = _load_golden_set()
+
+    def test_run_single_records_vram_peak(self):
+        peaks = iter([0.1, 4.2])
+
+        class FakeModel:
+            def transcribe(self, audio, batch_size=None, **kwargs):
+                return {"language": "fr", "segments": []}
+
+        run = self.gs.run_single(
+            run_spec={"whisper_model": "qwen3-asr", "hotwords": None},
+            audio_path="x.ogg",
+            load_audio_fn=lambda p: [0.0],
+            model_factory=lambda name: FakeModel(),
+            clock=lambda: 0.0,
+            align_fn=lambda audio, result: result,
+            diarize_fn=lambda audio, result: result,
+            vram_peak_fn=lambda: next(peaks),
+        )
+        self.assertAlmostEqual(run["vram_peak_gb"], 4.2)
+
+    def test_build_report_exposes_per_run_vram_and_global_peak(self):
+        runs = {
+            "turbo_baseline": {"ok": True, "transcript_hash": "a" * 64, "vram_peak_gb": 3.1},
+            "qwen_baseline": {"ok": True, "transcript_hash": "b" * 64, "vram_peak_gb": 4.2},
+            "qwen_hotwords": {"ok": True, "transcript_hash": "c" * 64, "vram_peak_gb": 4.99},
+        }
+        report = self.gs.build_report(
+            runs=runs,
+            word_timestamps_present=True,
+            words_carry_speakers=True,
+            vram_peak_gb=4.99,
+            rtfx=52.0,
+            false_positives=[],
+        )
+        self.assertEqual(report["vram_peak_by_run"]["qwen_hotwords"], 4.99)
+        self.assertEqual(report["vram_peak_gb"], 4.99)
+        self.assertIn("vram_peak_by_run", report)
+
+    def test_vram_peak_real_resets_and_reads_peak(self):
+        # vram_peak_real must call reset (before run) + read peak (after run):
+        # default_align_fn path exercised via inspect on the source.
+        import inspect
+
+        self.assertTrue(hasattr(self.gs, "vram_reset_real"))
+        src = inspect.getsource(self.gs.vram_reset_real)
+        self.assertIn("reset_peak_memory_stats", src)
+        src2 = inspect.getsource(self.gs.vram_peak_real)
+        self.assertIn("max_memory_allocated", src2)
+
+    def test_evaluate_report_checks_per_run_vram(self):
+        report = {
+            "runs": {
+                "turbo_baseline": {"ok": True, "transcript_hash": "a" * 64},
+                "qwen_baseline": {"ok": True, "transcript_hash": "b" * 64},
+                "qwen_hotwords": {"ok": True, "transcript_hash": "c" * 64},
+            },
+            "word_timestamps_present": True,
+            "words_carry_speakers": True,
+            "vram_peak_gb": 4.99,
+            "vram_peak_by_run": {"qwen_hotwords": 6.0},
+            "rtfx": 52.0,
+            "false_positives": [],
+        }
+        evaluation = self.gs.evaluate_report(report)
+        self.assertFalse(evaluation["all_pass"])
+        self.assertTrue(any("vram" in f.lower() for f in evaluation["failures"]))
 
 
 if __name__ == "__main__":
