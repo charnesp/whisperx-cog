@@ -3,27 +3,27 @@
 Baked weights live under /models (outside Cog's COPY . /src) so Docker
 build-time downloads survive the final source copy. Local ./models/ is
 kept as a fallback for `bash build.sh` during development.
+
+Model constants come from the unified registry (E5-CODE-1 T1): keys,
+HF repo ids and candidate dirs are declared once in models_registry.py.
+VAD stays a special case here (bundled whisperx asset, outside registry).
 """
 
 from __future__ import annotations
 
 import os
 
+from models_registry import hf_repo, local_candidates
+
 BAKED_MODELS_ROOT = "/models"
 
-WHISPER_MODEL_HF_IDS = {
-    "tiny": "Systran/faster-whisper-tiny",
-    "large-v3": "Systran/faster-whisper-large-v3",
-    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-}
+_WHISPER_KEYS = ("tiny", "large-v3", "large-v3-turbo")
+
+WHISPER_MODEL_HF_IDS: dict[str, str] = {key: hf_repo(key) for key in _WHISPER_KEYS}
 
 # Ordered candidates: baked absolute path first, then repo-relative.
 WHISPER_MODEL_LOCAL_PATHS: dict[str, list[str]] = {
-    name: [
-        f"{BAKED_MODELS_ROOT}/faster-whisper-{name}",
-        f"./models/faster-whisper-{name}",
-    ]
-    for name in WHISPER_MODEL_HF_IDS
+    key: local_candidates(key) for key in _WHISPER_KEYS
 }
 
 VAD_FILENAME = "whisperx-vad-segmentation.bin"
