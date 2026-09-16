@@ -1,5 +1,10 @@
 # Build the bridge Docker image and push to GitHub Container Registry (GHCR)
-# Package: ghcr.io/<owner>/whisperx-cog-bridge
+# Package: ghcr.io/charnesp/whisperx-cog-bridge
+#
+# Tags calculés par scripts/compute_image_tags.sh (contrat partagé avec
+# docker-publish.yml / provisioner-docker-publish.yml): sha-<short8>, canary,
+# tag de branche feat/** et :latest UNIQUEMENT en égalité exacte
+# refs/heads/main | refs/heads/master. Jamais de :latest hors main.
 
 name: Build and push bridge image
 
@@ -27,10 +32,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set image name (lowercase for GHCR)
-        run: |
-          echo "IMAGE_NAME=${{ env.REGISTRY }}/$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')-bridge" >> $GITHUB_ENV
-
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
@@ -38,13 +39,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build bridge image
-        run: docker build --progress=plain -t ${{ env.IMAGE_NAME }}:${{ github.sha }} ./bridge
-
-      - name: Tag image as latest
-        run: docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:latest
-
-      - name: Push image to GHCR
+      - name: Compute tags (compute_image_tags.sh — garde :latest main/master exact)
         run: |
-          docker push ${{ env.IMAGE_NAME }}:latest
-          docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          IMAGE="ghcr.io/charnesp/whisperx-cog-bridge"
+          eval "$(IMAGE="$IMAGE" bash scripts/compute_image_tags.sh)"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TAGS=$TAGS" >> "$GITHUB_ENV"
+
+      - name: Build bridge image
+        run: docker build --progress=plain -t ${{ env.IMAGE }}:${{ github.sha }} ./bridge
+
+      - name: Tag image (computed TAGS)
+        run: |
+          for tag in $TAGS; do
+            docker tag ${{ env.IMAGE }}:${{ github.sha }} "$tag"
+          done
+
+      - name: Push image to GHCR (computed TAGS)
+        run: |
+          for tag in $TAGS; do
+            docker push "$tag"
+          done
