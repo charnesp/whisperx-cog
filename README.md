@@ -130,6 +130,17 @@ curl -sS http://localhost:8080/v1/audio/transcriptions \
   -F language=fr
 ```
 
+**Qwen3-ASR with hotwords** (`model=qwen3-asr`; hotwords are injected as Qwen transcription context, no post-filtering — see [docs/DATA_CONTRACTS.md](./docs/DATA_CONTRACTS.md)):
+
+```bash
+curl -sS http://localhost:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $BRIDGE_TOKEN" \
+  -F file=@sample.ogg \
+  -F model=qwen3-asr \
+  -F language=fr \
+  -F hotwords="Backblaze, Supabase"
+```
+
 **Supported `response_format` values:** `json` (default), `text`, `verbose_json`, `srt`, `vtt`, `diarized_json`.
 
 **Diarized transcription** (speaker labels):
@@ -154,6 +165,9 @@ Requires `HUGGINGFACE_TOKEN` on the **whisperx** container (already set in k8s/c
 | `large-v3` | `large-v3` | off |
 | `large-v3-turbo` | `large-v3-turbo` | off |
 | `tiny` | `tiny` | off |
+| `qwen3-asr` | `qwen3-asr` | off |
+
+`qwen3-asr` requires the `ENABLE_QWEN` kill-switch to be enabled (default: enabled; see [docs/BRIDGE.md](./docs/BRIDGE.md)). Its `hotwords` field is injected as Qwen transcription context — see [docs/DATA_CONTRACTS.md](./docs/DATA_CONTRACTS.md).
 
 **Not supported (v1):** `known_speaker_references[]` returns HTTP 400 — see [PLANS.md](./PLANS.md) for follow-up.
 
