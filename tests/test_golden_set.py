@@ -318,17 +318,18 @@ class TestHarnessGpuFree(unittest.TestCase):
                     ],
                 }
 
+        ticks = iter([10.0, 12.5])
         run = self.gs.run_single(
             run_spec={"whisper_model": "qwen3-asr", "hotwords": "Backblaze, Supabase"},
             audio_path="/tmp/fake.ogg",  # noqa: S108 — test fixture path, never read
             load_audio_fn=fake_load_audio,
             model_factory=lambda name: FakeModel(name),
-            clock=lambda: 0.0,
+            clock=lambda: next(ticks),
         )
         self.assertEqual(captured["model"], "qwen3-asr")
         self.assertIn("bucket", run["transcript"])
         self.assertIn("transcript_hash", run)
-        self.assertGreater(run["duration_s"], 0.0)
+        self.assertAlmostEqual(run["duration_s"], 2.5)
         self.assertTrue(run["word_timestamps_present"])
         self.assertTrue(run["words_carry_speakers"])
 
