@@ -1,58 +1,155 @@
-# Pinned HF revisions for models baked into /models (cog.yaml build-time wget).
-# Revisions retrieved from the Hugging Face Hub API (GET /api/models/<repo>, field "sha")
-# on 2026-09-15. Used with HF_HUB_OFFLINE=1: baked weights must match these revisions.
+# models.lock v2 — one source of truth, sha256 per file (plan E5 T5).
+# LFS sha256 from the HF tree API (lfs.oid); non-LFS files downloaded
+# once and hashed by scripts/lock_audit.py (uniform sha256 schema).
+# VAD is OUT of the lock: bundled in whisperx (pip pin).
+# Regenerate: uv run scripts/lock_audit.py --regenerate
+version: 2
 models:
-  # ASR pipeline (Qwen3-ASR-1.7B, fp16)
-  - repo: Qwen/Qwen3-ASR-1.7B
-    revision: 7278e1e70fe206f11671096ffdd38061171dd6e5
-    expected_files:
-      - config.json
-      - generation_config.json
-      - preprocessor_config.json
-      - tokenizer_config.json
-      - vocab.json
-      - merges.txt
-      - chat_template.json
-      - model-00001-of-00002.safetensors
-      - model-00002-of-00002.safetensors
-      - model.safetensors.index.json
-
-  # Forced alignment on the qwen path (word-level timestamps)
-  - repo: Qwen/Qwen3-ForcedAligner-0.6B
-    revision: c7cbfc2048c462b0d63a45797104fc9db3ad62b7
-    expected_files:
-      - config.json
-      - generation_config.json
-      - preprocessor_config.json
-      - tokenizer_config.json
-      - vocab.json
-      - merges.txt
-      - chat_template.json
-      - model.safetensors
-
-  # faster-whisper backends (already baked for large-v3-turbo; large-v3/tiny same pattern)
-  - repo: mobiuslabsgmbh/faster-whisper-large-v3-turbo
-    revision: 0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf
-    expected_files:
-      - config.json
-      - preprocessor_config.json
-      - tokenizer.json
-      - vocabulary.json
-      - model.bin
-
-  - repo: Systran/faster-whisper-large-v3
-    revision: edaa852ec7e145841d8ffdb056a99866b5f0a478
-    expected_files:
-      - config.json
-      - preprocessor_config.json
-      - tokenizer.json
-      - vocabulary.json
-      - model.bin
-
-  - repo: Systran/faster-whisper-tiny
-    revision: d90ca5fe260221311c53c58e660288d3deb8d356
-    expected_files:
-      - config.json
-      - tokenizer.json
-      - vocabulary.txt
-      - model.bin
+- repo: Systran/faster-whisper-tiny
+  revision: d90ca5fe260221311c53c58e660288d3deb8d356
+  required: true
+  files:
+  - path: config.json
+    size: 2249
+    sha256: a73a28cdfe1c43ccc7202fa333d1f89c202477271407ae9a7f19afa52039cac8
+    lfs: false
+  - path: model.bin
+    size: 75538270
+    sha256: dcb76c6586fc06cbdac6dd21f14cfd129cc4cdd9dce19bf4ffa62e59cbe6e6d1
+    lfs: true
+  - path: tokenizer.json
+    size: 2203239
+    sha256: fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab
+    lfs: false
+  - path: vocabulary.txt
+    size: 459861
+    sha256: 34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913
+    lfs: false
+- repo: Systran/faster-whisper-large-v3
+  revision: edaa852ec7e145841d8ffdb056a99866b5f0a478
+  required: true
+  files:
+  - path: config.json
+    size: 2394
+    sha256: a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9
+    lfs: false
+  - path: model.bin
+    size: 3087284237
+    sha256: 69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1
+    lfs: true
+  - path: preprocessor_config.json
+    size: 340
+    sha256: 7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711
+    lfs: false
+  - path: tokenizer.json
+    size: 2480617
+    sha256: 6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca
+    lfs: false
+  - path: vocabulary.json
+    size: 1068114
+    sha256: c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1
+    lfs: false
+- repo: mobiuslabsgmbh/faster-whisper-large-v3-turbo
+  revision: 0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf
+  required: true
+  files:
+  - path: config.json
+    size: 2263
+    sha256: b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e
+    lfs: false
+  - path: model.bin
+    size: 1617884929
+    sha256: e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da
+    lfs: true
+  - path: preprocessor_config.json
+    size: 340
+    sha256: 7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711
+    lfs: false
+  - path: tokenizer.json
+    size: 2710337
+    sha256: 297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd
+    lfs: false
+  - path: vocabulary.json
+    size: 1068114
+    sha256: c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1
+    lfs: false
+- repo: Qwen/Qwen3-ASR-1.7B
+  revision: 7278e1e70fe206f11671096ffdd38061171dd6e5
+  required: true
+  files:
+  - path: chat_template.json
+    size: 1161
+    sha256: 75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff
+    lfs: false
+  - path: config.json
+    size: 6194
+    sha256: 2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f
+    lfs: false
+  - path: generation_config.json
+    size: 142
+    sha256: 1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c
+    lfs: false
+  - path: merges.txt
+    size: 1671853
+    sha256: 8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5
+    lfs: false
+  - path: model-00001-of-00002.safetensors
+    size: 4220320824
+    sha256: a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6
+    lfs: true
+  - path: model-00002-of-00002.safetensors
+    size: 478200688
+    sha256: 6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc
+    lfs: true
+  - path: model.safetensors.index.json
+    size: 64821
+    sha256: f994739fe38e5210b9e3e8ce6c6307315e2ceac3cb630e7b7414d69dce520f60
+    lfs: false
+  - path: preprocessor_config.json
+    size: 330
+    sha256: 45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d
+    lfs: false
+  - path: tokenizer_config.json
+    size: 12487
+    sha256: 4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c
+    lfs: false
+  - path: vocab.json
+    size: 2776833
+    sha256: ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910
+    lfs: false
+- repo: Qwen/Qwen3-ForcedAligner-0.6B
+  revision: c7cbfc2048c462b0d63a45797104fc9db3ad62b7
+  required: true
+  files:
+  - path: chat_template.json
+    size: 1161
+    sha256: 75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff
+    lfs: false
+  - path: config.json
+    size: 5982
+    sha256: d616c65d46c4b90bdc651b0a0963ea932732241140f337f9bb6b0335a9c8ef09
+    lfs: false
+  - path: generation_config.json
+    size: 115
+    sha256: 948d089b23bca1d214e768d59c4438365665f52ec6d33678f4062206b3fbbb8c
+    lfs: false
+  - path: merges.txt
+    size: 1671853
+    sha256: 8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5
+    lfs: false
+  - path: model.safetensors
+    size: 1835544544
+    sha256: 47831d0e82f96b20e9034dba01a075ee06436654719f6a68289e49f1b65ce0e7
+    lfs: true
+  - path: preprocessor_config.json
+    size: 330
+    sha256: 45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d
+    lfs: false
+  - path: tokenizer_config.json
+    size: 12666
+    sha256: 3ab80063f8511deb9566e6ad438d17b7a6277fcffd52d92854112f19d36bd81c
+    lfs: false
+  - path: vocab.json
+    size: 2776833
+    sha256: ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910
+    lfs: false

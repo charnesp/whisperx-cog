@@ -6,6 +6,13 @@ on:
     branches:
       - main
       - master
+    paths:
+      - "models.lock"
+      - "scripts/lock_audit.py"
+      - ".github/workflows/harness-audit.yml"
+      - "tests/**"
+      - "scripts/**"
+      - "Makefile.harness"
   workflow_dispatch:
 
 jobs:
@@ -21,7 +28,29 @@ jobs:
           python-version: "3.11"
 
       - name: Install PyYAML for manifest checks
-        run: pip install pyyaml
+        run: pip install pyyaml requests
 
       - name: Run harness CI
         run: make -f Makefile.harness ci
+
+  # E5 T5: models.lock is the single source of truth. This job fails the CI
+  # on drift between models.lock and the live HF API (sha256/size/missing).
+  # Uses the read-only GITHUB_TOKEN as HF token fallback (public repos).
+  lock-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install pyyaml requests
+
+      - name: lock_audit --check (fail on drift)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/lock_audit.py --check
