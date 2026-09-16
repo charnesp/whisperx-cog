@@ -32,8 +32,8 @@
 
 - [ ] 5.1 `requirements.txt`: pin `whisperx @ git+https://github.com/charnesp/whisperX@c49b26379f40863767e3c42d9afed5dc4221f54f`, add `qwen-asr==0.0.6 --no-deps`, explicit minimal deps (`transformers==4.57.6`, `soundfile`, `librosa`); verify no gradio/flask/vllm in the resolved tree
 - [ ] 5.2 `models.lock`: pin HF revisions for `Qwen/Qwen3-ASR-1.7B` and `Qwen/Qwen3-ForcedAligner-0.6B`
-- [ ] 5.3 `cog.yaml`: bake both snapshots into `/models` (wget + `test -s` on weights, one command per run item, same pattern as turbo); add `HF_HUB_OFFLINE=1` to the Cog environment
-- [ ] 5.4 Build the Cog image; verify `/models` contents and image size delta (~4–5 GB)
+- [ ] 5.3 À ABANDONNER (bake `/models` dans l'image) — remplacé par le bind mount hôte + `scripts/provision.py` (plan E5 §2.2/§5.3-5.4 : poids provisionnés depuis `models.lock` v2, image code-only, `cog.yaml` dé-baké avec `HF_HUB_OFFLINE=1` + `TRANSFORMERS_OFFLINE=1`)
+- [ ] 5.4 Reformulé : build code-only (~2-3 GB au lieu de ~10+ GB baké) ; les poids vivent sur le mount `/models` provisionné, pas dans l'image
 
 ## 6. Golden set (GPU, scripted, replayable)
 
