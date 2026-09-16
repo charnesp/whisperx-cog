@@ -14,46 +14,39 @@ from model_paths import (
 
 
 class TestResolveWhisperModelPath(unittest.TestCase):
-    def test_prefers_baked_absolute_path(self):
+    def test_online_mode_returns_hf_repo_id(self):
+        """MODELS_MODE=online is the explicit opt-in for the HF repo id."""
+        with mock.patch.dict(
+            "os.environ", {"MODELS_MODE": "online"}
+        ):
+            self.assertEqual(
+                resolve_whisper_model_path("large-v3-turbo"),
+                WHISPER_MODEL_HF_IDS["large-v3-turbo"],
+            )
+
+    def test_default_mode_has_no_hf_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(
+                "os.environ", {"MODELS_DIR": str(tmp), "MODELS_LOCK_PATH": str(Path(tmp) / "absent.lock")}
+            ):
+                from model_paths import ModelNotProvisioned
+
+                with self.assertRaises(ModelNotProvisioned):
+                    resolve_whisper_model_path("large-v3-turbo")
+
+    def test_env_override_wins(self):
+        import tempfile as _t
+
+        with _t.TemporaryDirectory() as tmp:
             baked = Path(tmp) / "faster-whisper-large-v3-turbo"
             baked.mkdir()
             (baked / "model.bin").write_bytes(b"x")
             with mock.patch.dict(
-                "model_paths.WHISPER_MODEL_LOCAL_PATHS",
-                {"large-v3-turbo": [str(baked), "./models/faster-whisper-large-v3-turbo"]},
+                "os.environ", {"MODELS_MODE": "online", "LARGE_V3_TURBO_PATH": str(baked)}
             ):
                 self.assertEqual(
                     resolve_whisper_model_path("large-v3-turbo"),
                     str(baked),
-                )
-
-    def test_falls_back_to_relative_local_path(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            rel = Path(tmp) / "local-turbo"
-            rel.mkdir()
-            (rel / "model.bin").write_bytes(b"x")
-            missing = Path(tmp) / "missing"
-            with mock.patch.dict(
-                "model_paths.WHISPER_MODEL_LOCAL_PATHS",
-                {"large-v3-turbo": [str(missing), str(rel)]},
-            ):
-                self.assertEqual(
-                    resolve_whisper_model_path("large-v3-turbo"),
-                    str(rel),
-                )
-
-    def test_falls_back_to_hf_repo_id(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            missing_a = Path(tmp) / "a"
-            missing_b = Path(tmp) / "b"
-            with mock.patch.dict(
-                "model_paths.WHISPER_MODEL_LOCAL_PATHS",
-                {"large-v3-turbo": [str(missing_a), str(missing_b)]},
-            ):
-                self.assertEqual(
-                    resolve_whisper_model_path("large-v3-turbo"),
-                    WHISPER_MODEL_HF_IDS["large-v3-turbo"],
                 )
 
     def test_baked_root_constant(self):

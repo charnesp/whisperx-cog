@@ -300,6 +300,8 @@ class TestWhisperPathBatchInvariant(unittest.TestCase):
         ), mock.patch.object(
             predict.whisperx, "load_audio", return_value=[]
         ), mock.patch.object(
+            predict, "resolve_whisper_model_path", return_value="large-v3-turbo"
+        ), mock.patch.object(
             predict, "get_audio_duration", return_value=1000.0
         ), mock.patch.object(
             predict, "align", side_effect=lambda *a, **k: fake_result
@@ -465,10 +467,22 @@ class TestBakedQwenWeights(unittest.TestCase):
 
 class TestQwenModelPaths(unittest.TestCase):
     def test_qwen_model_dir_resolution_baked_first(self):
-        self.assertIn("/models/qwen3-asr-1.7b", predict.QWEN_MODEL_LOCAL_PATHS)
+        """T3: snapshot resolution is registry-driven and fail-HARD."""
+        from model_paths import resolve_model_dir
+        from models_registry import local_candidates
+
+        self.assertIn(
+            "/models/qwen3-asr-1.7b", local_candidates("qwen3-asr-1.7b")
+        )
+        self.assertEqual(resolve_model_dir.__module__, "model_paths")
 
     def test_qwen_aligner_dir_resolution_baked_first(self):
-        self.assertIn("/models/qwen3-forced-aligner-0.6b", predict.QWEN_ALIGNER_LOCAL_PATHS)
+        from models_registry import local_candidates
+
+        self.assertIn(
+            "/models/qwen3-forced-aligner-0.6b",
+            local_candidates("qwen3-forced-aligner-0.6b"),
+        )
 
 
 class TestBridgeQwenRouting(unittest.TestCase):

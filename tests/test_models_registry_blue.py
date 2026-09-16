@@ -30,8 +30,6 @@ class TestPredictConstantsAreDerived(unittest.TestCase):
         assignment per constant (no duplicated literal fallback blocks)."""
         src = (REPO_ROOT / "predict.py").read_text()
         for name in (
-            "QWEN_MODEL_LOCAL_PATHS",
-            "QWEN_ALIGNER_LOCAL_PATHS",
             "QWEN_ASR_WEIGHT_FILES",
             "QWEN_ALIGNER_WEIGHT_FILES",
             "QWEN_ASR_HF_REPO",
@@ -45,7 +43,7 @@ class TestPredictConstantsAreDerived(unittest.TestCase):
             self.assertEqual(count, 1, f"{name} assigned {count}x in predict.py")
 
     def test_predict_constants_match_registry_specs(self):
-        from models_registry import MODELS, local_candidates
+        from models_registry import MODELS
 
         predict = self.predict
         self.assertEqual(
@@ -54,13 +52,6 @@ class TestPredictConstantsAreDerived(unittest.TestCase):
         self.assertEqual(
             predict.QWEN_ALIGNER_HF_REPO,
             MODELS["qwen3-forced-aligner-0.6b"].hf_repo,
-        )
-        self.assertEqual(
-            predict.QWEN_MODEL_LOCAL_PATHS, local_candidates("qwen3-asr-1.7b")
-        )
-        self.assertEqual(
-            predict.QWEN_ALIGNER_LOCAL_PATHS,
-            local_candidates("qwen3-forced-aligner-0.6b"),
         )
         self.assertEqual(
             predict.QWEN_ASR_WEIGHT_FILES,
