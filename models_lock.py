@@ -271,6 +271,27 @@ def fast_validate(
             )
 
 
+def assert_snapshot_weights(snapshot_dir: str | Path, weight_files) -> None:
+    """Single check point for a snapshot's weight files (non-empty).
+
+    Used by the fail-hard resolver contract; the runtime error keeps the
+    ModelsNotProvisioned type (exit 78 semantics) for consistency.
+    """
+    missing = [
+        name
+        for name in weight_files
+        if not os.path.isfile(os.path.join(snapshot_dir, name))
+        or os.path.getsize(os.path.join(snapshot_dir, name)) == 0
+    ]
+    if missing:
+        raise ModelsNotProvisioned(
+            f"E_MODEL_WEIGHTS_MISSING path={snapshot_dir} "
+            f"missing={', '.join(missing)}. "
+            f"Remediation: docker run --rm -v {PROVISIONER_HOST_DIR}:/models "
+            f"{PROVISIONER_IMAGE} provision."
+        )
+
+
 def boot_validate(
     models_root: str | Path | None = None,
     lock_file: str | Path | None = None,
