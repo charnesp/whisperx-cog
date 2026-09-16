@@ -259,11 +259,12 @@ class TestGoldenSetRuns(unittest.TestCase):
         self.assertEqual(evaluation["failures"], [])
 
     def test_evaluate_report_vram_failure_listed(self):
+        # pipeline threshold requalified at 6.5 GB (FIX 3): 6.6 GB fails
         report = {
             "runs": {},
             "word_timestamps_present": True,
             "words_carry_speakers": True,
-            "vram_peak_gb": 6.1,
+            "vram_peak_gb": 6.6,
             "rtfx": 52.0,
             "false_positives": [],
         }
@@ -325,7 +326,7 @@ class TestHarnessGpuFree(unittest.TestCase):
                     ],
                 }
 
-        ticks = iter([10.0, 12.5])
+        ticks = iter([10.0, 12.5, 15.0])  # transcribe start/end + run end (duration_total_s, FIX 4)
         run = self.gs.run_single(
             run_spec={"whisper_model": "qwen3-asr", "hotwords": "Backblaze, Supabase"},
             audio_path="/tmp/fake.ogg",  # noqa: S108 — test fixture path, never read
@@ -801,6 +802,7 @@ class TestVramPerRun(unittest.TestCase):
         self.assertIn("max_memory_allocated", src2)
 
     def test_evaluate_report_checks_per_run_vram(self):
+        # per-run pipeline peak threshold requalified at 6.5 GB (FIX 3): 6.6 fails
         report = {
             "runs": {
                 "turbo_baseline": {"ok": True, "transcript_hash": "a" * 64},
@@ -810,7 +812,7 @@ class TestVramPerRun(unittest.TestCase):
             "word_timestamps_present": True,
             "words_carry_speakers": True,
             "vram_peak_gb": 4.99,
-            "vram_peak_by_run": {"qwen_hotwords": 6.0},
+            "vram_peak_by_run": {"qwen_hotwords": 6.6},
             "rtfx": 52.0,
             "false_positives": [],
         }
@@ -1477,7 +1479,7 @@ class TestVramByStage(unittest.TestCase):
             rtfx=49.5,
             false_positives=[],
         )
-        self.assertEqual(report["vram_by_stage"]["qwen_hotwords"]["transcribe"], 4.2)
+        self.assertEqual(report["vram_by_stage"]["qwen_hotwords"]["transcribe"], 4.99)
 
     def test_fp16_documented_vs_fp32(self):
         # docstring guard: the pipeline-vs-ASR distinction is documented
@@ -1552,7 +1554,11 @@ class TestRtfxScope(unittest.TestCase):
 
     def test_evaluate_report_uses_rtfx_transcription(self):
         report = {
-            "runs": {},
+            "runs": {
+                "turbo_baseline": {"transcript_hash": "a" * 64, "ok": True},
+                "qwen_baseline": {"transcript_hash": "b" * 64, "ok": True},
+                "qwen_hotwords": {"transcript_hash": "c" * 64, "ok": True},
+            },
             "word_timestamps_present": True,
             "words_carry_speakers": True,
             "vram_peak_gb": 5.0,
@@ -1564,7 +1570,11 @@ class TestRtfxScope(unittest.TestCase):
 
     def test_evaluate_report_missing_rtfx_transcription_falls_back_to_rtfx(self):
         report = {
-            "runs": {},
+            "runs": {
+                "turbo_baseline": {"transcript_hash": "a" * 64, "ok": True},
+                "qwen_baseline": {"transcript_hash": "b" * 64, "ok": True},
+                "qwen_hotwords": {"transcript_hash": "c" * 64, "ok": True},
+            },
             "word_timestamps_present": True,
             "words_carry_speakers": True,
             "vram_peak_gb": 5.0,
