@@ -22,8 +22,13 @@ OPENAI_STT_TIMEOUT_SECONDS = int(os.environ.get("OPENAI_STT_TIMEOUT_SECONDS", "3
 OPENAI_STT_MAX_FILE_SIZE_MB = int(os.environ.get("OPENAI_STT_MAX_FILE_SIZE_MB", "25"))
 OPENAI_STT_MAX_FILE_SIZE_BYTES = OPENAI_STT_MAX_FILE_SIZE_MB * 1024 * 1024
 
+# Bridge default model (Charles decision, option 2): an ENV variable, not
+# hard-coded code. The OpenAI "whisper-1" alias routes to this model, so
+# production can switch the default backend (e.g. qwen3-asr) via env without
+# a code change. Unset keeps the original behavior (large-v3-turbo).
+BRIDGE_DEFAULT_MODEL = os.environ.get("BRIDGE_DEFAULT_MODEL", "large-v3-turbo")
+
 MODEL_MAP = {
-    "whisper-1": "large-v3-turbo",
     "gpt-4o-transcribe-diarize": "large-v3-turbo",
     "large-v3": "large-v3",
     "large-v3-turbo": "large-v3-turbo",
@@ -390,7 +395,16 @@ def validate_transcription_request(
     model = _field_value(fs, "model")
     if not model:
         return None, openai_error("model is required", "invalid_request_error", 400)
-    if model not in MODEL_MAP:
+    # The whisper-1 alias is NOT in MODEL_MAP: it resolves dynamically to
+    # BRIDGE_DEFAULT_MODEL (env), so the guard accepts the alias itself plus
+    # the resolved default value. Any other model must be in MODEL_MAP.
+    if model == "whisper-1":
+        whisper_model = os.environ.get("BRIDGE_DEFAULT_MODEL") or BRIDGE_DEFAULT_MODEL
+    elif model in MODEL_MAP:
+        whisper_model = MODEL_MAP[model]
+    elif model == BRIDGE_DEFAULT_MODEL:
+        whisper_model = model
+    else:
         return None, openai_error(
             f"model '{model}' not supported",
             "invalid_request_error",
@@ -402,7 +416,9 @@ def validate_transcription_request(
     # a Cog-side 500; predict.py keeps its own gate as defense in depth.
     # Same semantics as predict.qwen_enabled(): unset defaults to ENABLED,
     # only explicit falsy values (0/false/empty/…) disable the backend.
-    if model in QWEN_MODELS:
+    # Gated on the RESOLVED model: model=qwen3-asr directly AND the whisper-1
+    # alias resolving to qwen3-asr via BRIDGE_DEFAULT_MODEL are both covered.
+    if whisper_model in QWEN_MODELS:
         enable_qwen = os.environ.get("ENABLE_QWEN")
         if enable_qwen is not None and enable_qwen.strip().lower() not in (
             "1",
@@ -466,7 +482,7 @@ def validate_transcription_request(
         "file_bytes": file_bytes,
         "extension": extension,
         "model": model,
-        "whisper_model": MODEL_MAP[model],
+        "whisper_model": whisper_model,
         "language": language,
         "prompt": prompt,
         "hotwords": hotwords,

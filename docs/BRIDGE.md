@@ -26,6 +26,7 @@ python3 scripts/check-bridge-sync.py    # before commit (also: make smoke)
 | `OPENAI_STT_MAX_FILE_SIZE_MB` | env / `.env` | `25` | Max upload size (OpenAI STT) |
 | `HUGGINGFACE_TOKEN` | `HUGGINGFACE_TOKEN` | — | Passed to whisperx container only |
 | `ENABLE_QWEN` | env / `.env` | unset = **enabled** | Kill-switch for the `qwen3-asr` backend (see [Enable gate](#enable-gate-enable_qwen) below) |
+| `BRIDGE_DEFAULT_MODEL` | env / `.env` | `large-v3-turbo` | Cog model the `whisper-1` alias routes to (see [Default model](#default-model-bridge_default_model) below) |
 
 Loopback addresses (`127.0.0.1:6379`, `127.0.0.1:5000`, `localhost:8080` webhook) are fixed because Cog, Redis, and bridge share one network namespace.
 
@@ -103,6 +104,14 @@ Fixed Cog input on this path: `align_output: true`. Non-diarize requests set `di
 | unset (default) | **Enabled** — same default as `predict.qwen_enabled()` |
 | `1` / `true` / `yes` / `on` (case-insensitive) | Enabled |
 | anything else (`0`, `false`, `empty`, …) | HTTP 400 — qwen refused; whisper models unaffected |
+
+### Default model (BRIDGE_DEFAULT_MODEL)
+
+The OpenAI `whisper-1` alias is **not** hard-coded in `MODEL_MAP`: it routes dynamically to `BRIDGE_DEFAULT_MODEL` (bridge env, read at request time). Unset keeps the original behavior (`large-v3-turbo`). Production can switch the default backend (e.g. `BRIDGE_DEFAULT_MODEL=qwen3-asr`) via env without a code change — the orchestrator sets it.
+
+- Routing applies to the **resolved** model: with `BRIDGE_DEFAULT_MODEL=qwen3-asr`, a `model=whisper-1` request with `hotwords` follows the Qwen context path (and `ENABLE_QWEN` still gates it); with the default, the whisper path is unchanged (`hotwords: null`).
+- The model guard accepts `whisper-1`, the value of `BRIDGE_DEFAULT_MODEL`, and the fixed `MODEL_MAP` entries; anything else → HTTP 400.
+- `language` and `prompt` pass through to Cog unchanged, whatever the resolved model.
 
 ### Qwen passthrough rules (`model=qwen3-asr`)
 
