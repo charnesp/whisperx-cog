@@ -14,45 +14,13 @@ build:
     - curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF4E48910A020E77056748B745738AE8480447DDF" | gpg --dearmor -o /usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg
     - echo "deb [signed-by=/usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg] http://ppa.launchpad.net/ubuntuhandbook1/ffmpeg6/ubuntu jammy main" > /etc/apt/sources.list.d/ubuntuhandbook1-ffmpeg6.list
     - apt-get update -qq && apt-get install -qqy --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-    # Bake turbo to /models BEFORE Cog COPY . /src (one command per list item — Cog rejects newlines in run).
-    # VAD is bundled in whisperx>=3.2 (whisperx/assets/pytorch_model.bin) — do not download from S3.
-    - mkdir -p /models/faster-whisper-large-v3-turbo
-    - wget -q -O /models/faster-whisper-large-v3-turbo/config.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/config.json
-    - wget -q -O /models/faster-whisper-large-v3-turbo/model.bin https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/model.bin
-    - wget -q -O /models/faster-whisper-large-v3-turbo/preprocessor_config.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/preprocessor_config.json
-    - wget -q -O /models/faster-whisper-large-v3-turbo/tokenizer.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/tokenizer.json
-    - wget -q -O /models/faster-whisper-large-v3-turbo/vocabulary.json https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main/vocabulary.json
-    - test -s /models/faster-whisper-large-v3-turbo/model.bin
-    - ls -lh /models/faster-whisper-large-v3-turbo/model.bin
-    # Bake Qwen3-ASR + Qwen3-ForcedAligner to /models BEFORE Cog COPY . /src.
-    # Revisions pinned in models.lock (retrieved from the HF Hub API, field
-    # "sha"). Runtime runs with HF_HUB_OFFLINE=1: predict.py fails fast if the
-    # baked weights are missing (no silent HF download at request time).
-    - mkdir -p /models/qwen3-asr-1.7b /models/qwen3-forced-aligner-0.6b
-    - wget -q -O /models/qwen3-asr-1.7b/config.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/config.json
-    - wget -q -O /models/qwen3-asr-1.7b/generation_config.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/generation_config.json
-    - wget -q -O /models/qwen3-asr-1.7b/preprocessor_config.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/preprocessor_config.json
-    - wget -q -O /models/qwen3-asr-1.7b/tokenizer_config.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/tokenizer_config.json
-    - wget -q -O /models/qwen3-asr-1.7b/vocab.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/vocab.json
-    - wget -q -O /models/qwen3-asr-1.7b/merges.txt https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/merges.txt
-    - wget -q -O /models/qwen3-asr-1.7b/chat_template.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/chat_template.json
-    - wget -q -O /models/qwen3-asr-1.7b/model.safetensors.index.json https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model.safetensors.index.json
-    - wget -q -O /models/qwen3-asr-1.7b/model-00001-of-00002.safetensors https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00001-of-00002.safetensors
-    - wget -q -O /models/qwen3-asr-1.7b/model-00002-of-00002.safetensors https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00002-of-00002.safetensors
-    - test -s /models/qwen3-asr-1.7b/model-00001-of-00002.safetensors
-    - test -s /models/qwen3-asr-1.7b/model-00002-of-00002.safetensors
-    - ls -lh /models/qwen3-asr-1.7b/model-00001-of-00002.safetensors /models/qwen3-asr-1.7b/model-00002-of-00002.safetensors
-    - wget -q -O /models/qwen3-forced-aligner-0.6b/config.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/config.json
-    - wget -q -O /models/qwen3-forced-aligner-0.6b/generation_config.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/generation_config.json
-    - wget -q -O /models/qwen3-forced-aligner-0.6b/preprocessor_config.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/preprocessor_config.json
-    - wget -q -O /models/qwen3-forced-aligner-0.6b/tokenizer_config.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/tokenizer_config.json
-    - wget -q -O /models/qwen3-forced-aligner-0.6b/vocab.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/vocab.json
-    - wget -q -O /models/qwen3-forced-aligner-0.6b/merges.txt https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/merges.txt
-    - wget -q -O /models/qwen3-forced-aligner-0.6b/chat_template.json https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/chat_template.json
-    - wget -q -O /models/qwen3-forced-aligner-0.6b/model.safetensors https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/resolve/c7cbfc2048c462b0d63a45797104fc9db3ad62b7/model.safetensors
-    - test -s /models/qwen3-forced-aligner-0.6b/model.safetensors
-    - ls -lh /models/qwen3-forced-aligner-0.6b/model.safetensors
+    # E5 canary decision: NO weight baking. /models is a host bind mount
+    # provisioned by scripts/provision.py against models.lock v2 (sha256 per
+    # file). This image is code-only (~2-3 GB instead of ~10+ GB).
+    # VAD is bundled in whisperx>=3.2 (whisperx/assets/pytorch_model.bin) —
+    # nothing to provision, arrives via pip.
 environment:
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
   - "HF_HUB_OFFLINE=1"
+  - "TRANSFORMERS_OFFLINE=1"
 predict: "predict.py:Predictor"
