@@ -87,13 +87,35 @@ def load_lock(lock_path: Path) -> dict[str, Any]:
     return lock
 
 
+def _lock_repo(lock: dict[str, Any], model: str) -> str:
+    """Resolve a registry key (or alias) to its HF repo via models_registry.
+
+    Single source of truth: the registry maps key -> hf_repo and the lock
+    entries carry `repo`. Full repo ids / repo basenames fall through
+    unchanged so direct callers passing e.g. 'Qwen/Qwen3-ASR-1.7B' keep
+    working.
+    """
+    import models_registry
+
+    try:
+        return models_registry.MODELS[
+            models_registry.resolve_key(model)
+        ].hf_repo
+    except KeyError:
+        return model
+
+
 def lock_entry(lock: dict[str, Any], model: str) -> dict[str, Any]:
-    """Find a model entry in the parsed lock by key (dirname) or repo name."""
+    """Find a model entry in the parsed lock by key (dirname) or repo name.
+
+    Registry keys ('tiny', 'qwen3-asr-1.7b', …), the qwen API alias
+    ('qwen3-asr'), full HF repo ids and repo basenames all resolve.
+    """
+    repo = _lock_repo(lock, model)
+    candidates = {model, repo} - {None}
     for entry in lock["models"]:
-        repo = entry.get("repo", "")
-        if repo == model:
-            return entry
-        if repo.split("/")[-1].lower() == model.lower():
+        entry_repo = entry.get("repo", "")
+        if entry_repo in candidates:
             return entry
         if entry.get("model") == model:
             return entry
