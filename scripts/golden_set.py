@@ -320,6 +320,12 @@ def run_single(
     # the aligned words via assign_word_speakers — the keys this run's
     # gates check. Without the wiring both gates would fail on real output.
     if align_fn is not None:
+        # FIX 1 (E4-FIX-2): the raw transcribe result NEVER carries
+        # 'whisper_model' (asr_qwen returns {segments, language} only), so
+        # inject the model name before align dispatch — on the qwen path
+        # default_align_fn routes to predict.align_qwen, not wav2vec2 align.
+        result = dict(result or {})
+        result["whisper_model"] = model_name
         result = align_fn(audio, result)
     if diarize_fn is not None:
         result = diarize_fn(audio, result)
@@ -466,6 +472,13 @@ def build_report(
     vram_peak_by_run = {
         name: run["vram_peak_gb"] for name, run in runs.items() if run.get("vram_peak_gb") is not None
     }
+    if vram_peak_by_run:
+        # FIX 2 (E4-FIX-2): the report's vram_peak_gb is the TRUE global
+        # peak = max over the per-run peaks, not the last vram_peak_fn()
+        # reading (which only reflects the LAST run — each run resets the
+        # CUDA peak counter). Backward compatible: no per-run peaks (CI
+        # mocks) keeps the supplied scalar.
+        vram_peak_gb = max(vram_peak_by_run.values())
     return {
         "runs": runs,
         "word_timestamps_present": word_timestamps_present,
