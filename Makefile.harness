@@ -22,7 +22,10 @@ check: smoke
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py' -q
 
 ## Lint (ruff). Install once: uv tool install ruff (or pip install ruff).
+## Hard gate (FIX 6): ruff missing -> FAIL exit 1, never a silent SKIP.
 lint:
+	@command -v $(RUFF) >/dev/null 2>&1 || { \
+		echo "FAIL lint: $(RUFF) not on PATH — install it first (uv tool install ruff or pip install ruff)"; exit 1; }
 	$(RUFF) check .
 
 ## Dependency vulnerability audit (pip-audit).
@@ -33,7 +36,7 @@ lint:
 ## with PKG_AUDIT_IGNORE="<ID ID>" (e.g. a CVE whose fix is not yet compatible).
 pkg-audit:
 	@command -v $(PIP_AUDIT) >/dev/null 2>&1 || { \
-		echo "SKIP pkg-audit: $(PIP_AUDIT) not on PATH (install: uv tool install pip-audit)"; exit 0; }
+		echo "FAIL pkg-audit: $(PIP_AUDIT) not on PATH — install it first (uv tool install pip-audit)"; exit 1; }
 	@PKG_AUDIT_BIN=$(PIP_AUDIT) PKG_AUDIT_IGNORE="$$PKG_AUDIT_IGNORE PYSEC-2025-217 PYSEC-2026-2288 PYSEC-2026-2289 PYSEC-2026-2290 PYSEC-2026-3929" $(PYTHON) scripts/pkg_audit.py
 
 ## Full harness gate (CI)

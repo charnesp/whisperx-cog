@@ -597,7 +597,7 @@ class TestVramPerRun(unittest.TestCase):
         self.gs = _load_golden_set()
 
     def test_run_single_records_vram_peak(self):
-        peaks = iter([0.1, 4.2])
+        peaks = iter([4.2])
 
         class FakeModel:
             def transcribe(self, audio, batch_size=None, **kwargs):
