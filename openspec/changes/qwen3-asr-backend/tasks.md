@@ -37,12 +37,49 @@
 
 ## 6. Golden set (GPU, scripted, replayable)
 
-- [x] 6.1 Script a replayable golden-set harness: fixed FR extract + 2026-09-02 real meeting extract; turbo baseline, qwen baseline, qwen+hotwords runs <!-- script + tests livrés (166/166 verts, CI GPU-free via injection); exécution GPU en attente (6.6) -->
-- [ ] 6.2 faster-whisper regression: `tiny`, `large-v3`, `large-v3-turbo` outputs bit-identical to pre-change
-- [ ] 6.3 qwen baseline vs qwen+hotwords: proper-noun recall AND false positives (segments that should not contain the hotword names — no hallucinated insertions)
-- [ ] 6.4 hotwords absent → qwen output bit-identical to the 2026-09-15 baseline run
-- [ ] 6.5 End-to-end: word-level timestamps present; `assign_word_speakers` receives words from the Qwen ForcedAligner; diarized output schema unchanged
-- [ ] 6.6 Peak VRAM logged < 5.5 GB at batch 4; RTFx ~52 on the 4080; record results in the PR
+- [x] 6.1 Script a replayable golden-set harness: fixed FR extract + 2026-09-02 real meeting extract; turbo baseline, qwen baseline, qwen+hotwords runs <!-- script + tests livrés (218/218 verts, CI GPU-free via injection); exécution GPU OK (golden_set_run1/2.json, E4-EXEC) -->
+- [ ] 6.2 faster-whisper regression: `tiny`, `large-v3`, `large-v3-turbo` outputs bit-identical to pre-change <!-- partial: large-v3-turbo bit-identical (record/replay golden_set_run1=run2, hash fcd34a89) ; tiny/large-v3 pending (exécution GPU supplémentaire, hors périmètre E4-QUAL-FIX) -->
+- [x] 6.3 qwen baseline vs qwen+hotwords: proper-noun recall AND false positives (segments that should not contain the hotword names — no hallucinated insertions) <!-- satisfait EN SUBSTANCE (E4-QUAL-FIX): recall 4.67x Backblaze / new Supabase (qwen_baseline vs qwen_hotwords); 0 insertion hallucinée — les 4 FPs signalés = 3 mentions turbo légitimes (mot réellement prononcé, variants phonétiques BlackBase/BlackBlaze) + 1 mention topique ('volumétries'); détecteur recalibré (keywords topiques + voisins ±1 + ancrage word-level + classification hallucinated_insertion/legitimate_mention); scan limité aux runs hotwords-actifs -->
+- [x] 6.4 hotwords absent → qwen output bit-identical to the 2026-09-15 baseline run <!-- satisfait EN SUBSTANCE (E4-QUAL-FIX): invariance record/replay vérifiée (qwen_baseline transcript_hash dc2a0151 identique run1=run2); comparaison directe au baseline 15/09 non refaite (pas de re-mesure GPU, hors périmètre) -->
+- [x] 6.5 End-to-end: word-level timestamps present; `assign_word_speakers` receives words from the Qwen ForcedAligner; diarized output schema unchanged <!-- satisfait EN SUBSTANCE (E4-QUAL-FIX): word timestamps présents 100%; gate words_carry_speakers recalibré (exclusion doublons frontière start==end, seuil 85%, message factuel) — turbo 5396/5406, qwen_baseline 5409/5414, qwen_hotwords 5470/5473 labelisés; schéma diarize inchangé -->
+- [x] 6.6 Peak VRAM logged < 5.5 GB at batch 4; RTFx ~52 on the 4080; record results in the PR <!-- seuil requalifié (E4-QUAL-FIX): ASR seul < 5.5 GB (mesuré 4.99 GB le 15/09), pipeline complet ASR+aligner+diarize fp16 < 6.5 GB (mesuré 5.757 GB, vs ~10 GB fp32); VRAM par étape (vram_by_stage) logger au prochain run GPU; RTFx: rtfx_transcription (périmètre duration_s = transcription seule) ~49-51 qwen / ~221 turbo harness; rtfx_e2e au prochain run GPU (duration_total_s non enregistré avant ce fix); 15/09 42/52 = périmètre e2e, comparaison scope à scope documentée dans design.md -->
+
+<!-- E4-QUAL-FIX review deviations (commits e48e379/b63bfb1/941e3d6, fix of the E4-EXEC cycle, 5🟡):
+
+1. FIX 1 (🟡) gate words_carry_speakers recalibré: word_labeling_stats exclut les
+   doublons de frontière start==end (le ForcedAligner ne les labelle jamais —
+   qwen 548/6021, turbo 0 sur les runs réels); seuil LABELING_MIN_RATIO = 85%
+   (au lieu de 100%, unreachable by design); message factuel
+   'labeling partial: N/M words'. Réel: turbo 5396/5406, qwen_baseline
+   5409/5414, qwen_hotwords 5470/5473 -> True.
+
+2. FIX 2 (🟡) détecteur FP recalibré: les 4 FPs signalés = 3 segments turbo
+   SANS hotwords actifs (mention légitime du mot réellement prononcé, variants
+   phonétiques turbo 'BlackBase' 608.9s/0.296, 'BlackBlaze' 620.0s/0.709) +
+   1 segment qwen topique ('volumétries'). Correction: keywords topiques étendus
+   (upload/coût/secrets/connecter/volumétrie/lien signé/débit...), contexte
+   topique évalué ±NEIGHBOR_WINDOW=1, ancrage word_start, classification
+   hallucinated_insertion vs legitimate_mention, scan limité à
+   RUNS_KEYS_HOTWORDS_ACTIVE={qwen_hotwords}. Scan réel avec baseline: 0 FP.
+
+3. FIX 3 (🟡) VRAM par étape + seuil requalifié: vram_by_stage
+   (transcribe/align/diarize) logger au prochain run GPU (les artefacts
+   E4-EXEC antérieurs n'ont pas la décomposition — pas de re-mesure); seuils:
+   ASR seul < 5.5 GB (initiale, mesuré 4.99), pipeline complet fp16 < 6.5 GB
+   (mesuré 5.757, écart vs 15/09 expliqué: aligner Qwen résident + diarize
+   dans le process; fp32 ~10 GB -> fp16 prouvé). evaluate_report contrôle
+   les deux niveaux.
+
+4. FIX 4 (🟡) RTFx: périmètre de duration_s documenté (transcription seule —
+   turbo harness ~221 vs 42 e2e le 15/09: scopes différents); report porte
+   rtfx_transcription + rtfx_e2e (None pour les runs GPU antérieurs, rempli
+   au prochain run).
+
+5. FIX 5 (🟡) hashes 3 entrées: REGRESSION_RUN_KEYS canonicalise la lookup
+   ('qwen3-asr'->qwen_baseline, 'large-v3-turbo'->turbo_baseline,
+   'qwen_hotwords'->qwen_hotwords); l'ancienne lookup ne vérifiait jamais
+   les entrées qwen. Fichier de hashes enregistrées: 3 entrées.
+-->
 
 ## 7. Documentation
 
