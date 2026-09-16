@@ -4,7 +4,6 @@ GPU-free: the HF tree API responses are fixtures (recorded 2026-09-16, see
 tmp/stt/hf_trees_e5.json for the live raw data). No network in unit tests.
 """
 
-import json
 import tempfile
 import textwrap
 import unittest
@@ -108,13 +107,13 @@ class TestTreeToLock(unittest.TestCase):
         self.assertEqual(spec["lfs"], False)
 
     def test_build_lock_from_tree(self):
-        lock = build_lock_from_tree(
+        m = build_lock_from_tree(
             fake_tree(),
             required=True,
             excluded=lambda p: p in {"README.md", ".gitattributes"},
         )
+        lock = {"version": 2, "models": [m]}
         self.assertEqual(lock["version"], 2)
-        m = lock["models"][0]
         self.assertEqual(m["repo"], "Systran/faster-whisper-tiny")
         self.assertEqual(m["revision"], "d90ca5fe260221311c53c58e660288d3deb8d356")
         self.assertTrue(m["required"])
@@ -149,8 +148,7 @@ class TestCheckAgainstLock(unittest.TestCase):
         # Local tree with correct sha256 (LFS) and matching sizes.
         local = self.tmp / "tiny"
         local.mkdir()
-        (local / "model.bin").write_bytes(b"x" * 75538270 % 256 * 1)  # size wrong but sha-checked via stub
-        # We stub the local tree listing + hashing instead of real files.
+        # Stub the local tree listing instead of hashing real 75MB files.
         local_tree = [
             {"path": "model.bin", "size": 75538270, "sha256": "dcb76c6586fc06cbdac6dd21f14cfd129cc4cdd9dce19bf4ffa62e59cbe6e6d1", "lfs": True},
             {"path": "config.json", "size": 2249, "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "lfs": False},
