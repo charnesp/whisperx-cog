@@ -103,6 +103,35 @@ class TestProvisionerWorkflowContent(unittest.TestCase):
         self.assertIn("secrets.GITHUB_TOKEN", raw)
         self.assertIn("packages: write", raw)
 
+    def test_tags_persisted_newline_separated(self):
+        """FIX (revue E5): build-push-action splitte `tags:` sur newlines.
+
+        Un TAGS espace-séparé persisté via `printf 'TAGS=%s'` arrive côté
+        buildx comme UN SEUL tag invalide. Le step Compute tags doit donc:
+        - écrire TAGS en heredoc multi-ligne (TAGS<<EOF),
+        - convertir les espaces en newlines (${TAGS// /$'\\n'} ou équivalent),
+        - ne plus persister TAGS avec un printf à espace direct.
+        docker-publish.yml, lui, garde sa boucle `for t in $TAGS` (shell
+        word-splitting) — aucune conversion newline requise là-bas.
+        """
+        provisioner = WORKFLOW_PATH.read_text()
+        compute_step = provisioner.split("Compute tags", 1)[1].split("- name:", 1)[0]
+        self.assertIn("TAGS<<EOF", compute_step, "TAGS must be persisted as GITHUB_ENV heredoc")
+        self.assertTrue(
+            "${TAGS// /$'\\n'}" in compute_step
+            or "${TAGS// /\\n}" in compute_step
+            or "${TAGS// /" in compute_step,
+            "spaces in TAGS must be converted to newlines before persistence",
+        )
+        self.assertNotRegex(
+            compute_step,
+            r"printf\s+'TAGS=%s\\n'[^|]*\"\$\{?TAGS\}?\"",
+            "direct space-separated TAGS persistence is forbidden",
+        )
+        # Pas de régression: docker-publish.yml garde sa boucle for (shell).
+        docker_publish = (REPO_ROOT / ".github" / "workflows" / "docker-publish.yml").read_text()
+        self.assertIn("for t in $TAGS", docker_publish, "docker-publish.yml must keep its for loop over $TAGS")
+
 
 class TestProvisionerDockerfile(unittest.TestCase):
     def test_dockerfile_exists(self):

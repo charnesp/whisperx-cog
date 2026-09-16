@@ -40,8 +40,13 @@ jobs:
         run: |
           eval "$(IMAGE="ghcr.io/charnesp/whisperx-provisioner" bash scripts/compute_image_tags.sh)"
           # Persister les variables aux steps suivants (eval ne survit pas au step)
-          printf 'IMAGE=%s\nTAGS=%s\nIS_DEFAULT_BRANCH=%s\nSHORT_SHA=%s\n' \
-            "$IMAGE" "$TAGS" "$IS_DEFAULT_BRANCH" "$SHORT_SHA" >> "$GITHUB_ENV"
+          printf 'IMAGE=%s\nIS_DEFAULT_BRANCH=%s\nSHORT_SHA=%s\n' \
+            "$IMAGE" "$IS_DEFAULT_BRANCH" "$SHORT_SHA" >> "$GITHUB_ENV"
+          # TAGS doit être NEWLINE-SEPARATED: docker/build-push-action@v6
+          # `tags:` splitte sur les newlines — une chaîne à espaces arrive
+          # côté buildx comme UN SEUL tag invalide ('invalid tag "… canary …"').
+          # Format heredoc GITHUB_ENV (multi-ligne légal):
+          printf 'TAGS<<EOF\n%s\nEOF\n' "${TAGS// /$'\n'}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
