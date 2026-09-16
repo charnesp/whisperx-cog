@@ -105,18 +105,31 @@ class TestVerifyJournalsDeployedLock(_TmpTree):
 
 
 class TestGcProtectsDeployedLocks(_TmpTree):
+    def _hand_provision(self, rev: str, stale: float) -> None:
+        """Create a revision dir WITHOUT touching history.jsonl (as if the
+        models tree predates the journal or history was rotated)."""
+        from test_provision import make_source
+        import shutil
+        import subprocess
+        import sys as _sys
+
+        d = self.models_root / "qwen3-asr-1.7b" / rev
+        d.mkdir(parents=True)
+        (d / "config.json").write_text("hello-world")
+        (d / "model.safetensors").write_text("weights")
+        (d / ".complete").write_text("ok\n")
+        os.utime(d, (stale, stale))
+
     def test_gc_apply_preserves_revision_present_in_deployed_locks(self):
-        deployed = "d" * 40  # old, NOT in history, but an image is running it
-        self._import_rev("1" * 40)
-        self._import_rev(deployed)
-        self._import_rev(SHA)
-        # journal: a deployed image still references `deployed`
-        record_deployed_lock(self.models_root, {"qwen3-asr-1.7b": deployed})
-        # backdate both non-active revisions beyond the recent window
+        # Deployed sha: old (> recent window), NOT in history.jsonl, but an
+        # image currently running references it via its embedded models.lock
+        # (journaled by verify). GC must PRESERVE it.
+        deployed = "d" * 40
+        self._import_rev(SHA)  # active; history holds only SHA
         stale = time.time() - 30 * 86400
-        for rev in ("1" * 40, deployed):
-            os.utime(self.models_root / "qwen3-asr-1.7b" / rev, (stale, stale))
-        # ensure history cannot protect it: exclude from the fake history
+        self._hand_provision("1" * 40, stale)  # extra old rev (GC-eligible)
+        self._hand_provision(deployed, stale)
+        record_deployed_lock(self.models_root, {"qwen3-asr-1.7b": deployed})
         gc_command(
             ["--model", "qwen3-asr-1.7b", "--apply"],
             models_root=self.models_root,
@@ -128,7 +141,25 @@ class TestGcProtectsDeployedLocks(_TmpTree):
             deployed, remaining, "deployed lock sha must be GC-protected"
         )
         self.assertIn(SHA, remaining)  # current
-        self.assertIn("1" * 40, remaining)  # previous (keep-2)
+
+    def test_gc_without_journal_would_delete_the_deployed_sha(self):
+        # Causality: the exact same tree WITHOUT the journal — the deployed
+        # sha is collected (old + absent from history + not protected).
+        deployed = "d" * 40
+        self._import_rev(SHA)
+        stale = time.time() - 30 * 86400
+        self._hand_provision("1" * 40, stale)
+        self._hand_provision(deployed, stale)
+        gc_command(
+            ["--model", "qwen3-asr-1.7b", "--apply"],
+            models_root=self.models_root,
+        )
+        remaining = sorted(
+            p.name for p in (self.models_root / "qwen3-asr-1.7b").iterdir()
+        )
+        self.assertNotIn(
+            deployed, remaining, "without the journal the sha is GC-eligible"
+        )
 
     def test_gc_still_deletes_when_not_in_deployed_locks(self):
         orphan = "e" * 40  # never referenced by any deployed lock
@@ -139,7 +170,7 @@ class TestGcProtectsDeployedLocks(_TmpTree):
         record_deployed_lock(self.models_root, {"qwen3-asr-1.7b": SHA})
         stale = time.time() - 30 * 86400
         os.utime(self.models_root / "qwen3-asr-1.7b" / orphan, (stale, stale))
-        os.utime(self.models_root / "qwen3-asr-1.7b" / "1" * 40, (stale, stale))
+        os.utime(self.models_root / "qwen3-asr-1.7b" / ("1" * 40), (stale, stale))
         gc_command(
             ["--model", "qwen3-asr-1.7b", "--apply"],
             models_root=self.models_root,

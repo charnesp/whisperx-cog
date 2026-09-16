@@ -49,6 +49,7 @@ STATE_DIRNAME = ".state"
 LOCKS_DIRNAME = ".locks"
 ACTIVE_FILE = "active.json"
 HISTORY_FILE = "history.jsonl"
+DEPLOYED_LOCKS_FILE = "deployed_locks.jsonl"
 
 
 class CommandError(Exception):
@@ -355,6 +356,51 @@ def state_history_shas(models_root: Path, model: str) -> set[str]:
     return shas
 
 
+def record_deployed_lock(
+    models_root: Path, shas_by_model: dict[str, str], ts: int | None = None
+) -> None:
+    """Append the current lock (sha per model) to the deployed-locks journal.
+
+    Append-only: each verify appends one line so the GC can protect the
+    revisions still referenced by the models.lock EMBEDDED in any image
+    that verified itself (the host lock may have been bumped since).
+    """
+    state_dir = models_root / STATE_DIRNAME
+    state_dir.mkdir(parents=True, exist_ok=True)
+    record = {"ts": int(ts if ts is not None else time.time()), "models": dict(shas_by_model)}
+    with (state_dir / DEPLOYED_LOCKS_FILE).open("a") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def deployed_lock_shas(models_root: Path, model: str | None = None) -> set[str]:
+    """All shas journaled as deployed (optionally for one model).
+
+    Malformed lines are skipped: the journal never blocks the GC.
+    """
+    journal = models_root / STATE_DIRNAME / DEPLOYED_LOCKS_FILE
+    if not journal.exists():
+        return set()
+    shas: set[str] = set()
+    for line in journal.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        models = rec.get("models")
+        if not isinstance(models, dict):
+            continue
+        for key, sha in models.items():
+            if model is None or key == model:
+                if isinstance(sha, str) and sha:
+                    shas.add(sha)
+    return shas
+
+
 # ---------------------------------------------------------------------------
 # Exclusions
 
@@ -512,6 +558,7 @@ def verify_command(argv, models_root: Path | None = None, staging_root: Path | N
     lock = load_lock(root / "models.lock")
     entry = lock_entry(lock, args.model)
     revision = entry.get("revision")
+    assert isinstance(revision, str), "load_lock enforces a 40-hex revision"
     dest_dir = root / args.model / revision
 
     marker = complete_marker_path(root, args.model, revision)
@@ -524,6 +571,10 @@ def verify_command(argv, models_root: Path | None = None, staging_root: Path | N
         )
 
     files = lock_files_to_fetch(entry)
+    # Journal the lock sha for this model BEFORE reporting: the GC adds
+    # these shas to its protected set so a revision still referenced by a
+    # deployed image's embedded models.lock is never collected (FIX 2).
+    record_deployed_lock(root, {args.model: revision})
     failures: list[tuple[str, str, str]] = []
     for spec in files:
         f = dest_dir / spec["path"]
@@ -607,6 +658,9 @@ def gc_command(argv, models_root: Path | None = None, staging_root: Path | None 
     prev = state_previous_sha(root, args.model, exclude=current)
     if prev:
         protected.add(prev)
+    # Revisions still referenced by a deployed image's embedded models.lock
+    # (journaled at verify time): old + absent from history but live.
+    protected |= deployed_lock_shas(root, args.model)
     protected |= {  # revisions younger than the recent window
         r for r in model_revisions_on_disk(root, args.model)
         if (root / args.model / r).stat().st_mtime >= time.time() - args.recent_days * 86400
