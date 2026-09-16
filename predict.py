@@ -175,21 +175,15 @@ def qwen_effective_language(whisper_model: str, language):
 
 
 def assert_baked_qwen_weights(snapshot_dir: str, weight_files=None) -> None:
-    """Fail fast when a baked Qwen snapshot is missing weights (HF_HUB_OFFLINE=1:
-    no silent HuggingFace download is possible at runtime)."""
-    weight_files = weight_files or QWEN_ASR_WEIGHT_FILES
-    missing = [
-        name
-        for name in weight_files
-        if not os.path.isfile(os.path.join(snapshot_dir, name))
-        or os.path.getsize(os.path.join(snapshot_dir, name)) == 0
-    ]
-    if missing:
-        raise RuntimeError(
-            f"Missing baked Qwen weights in {snapshot_dir}: {', '.join(missing)}. "
-            f"HF_HUB_OFFLINE=1 forbids a runtime download from HuggingFace — "
-            f"rebuild the image so cog.yaml bakes {QWEN_ASR_HF_REPO} into /models."
-        )
+    """Back-compat shim (T3 BLUE): single check point = models_lock.
+
+    Delegates to assert_snapshot_weights (non-empty weights). The
+    fail-fast semantics are unchanged, only the vocabulary is unified
+    (E_MODEL_WEIGHTS_MISSING + provisioner remediation).
+    """
+    from models_lock import assert_snapshot_weights
+
+    assert_snapshot_weights(snapshot_dir, weight_files or QWEN_ASR_WEIGHT_FILES)
 
 
 _QWEN_ALIGNER_LOCAL_PATHS_SENTINEL = ["qwen3-forced-aligner-0.6b"]
