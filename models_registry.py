@@ -110,9 +110,6 @@ MODELS: dict[str, _ModelSpec] = MappingProxyType(
 # Legacy/dev dirnames: /models/<dirname> (old flat bake) and
 # ./models/<dirname> (bash build.sh). The provisioned revisioned layout
 # /models/<key>/<sha40>/ is owned by models_lock.py (T2).
-_WHISPER_KEYS = ("tiny", "large-v3", "large-v3-turbo")
-_QWEN_MODEL_KEY = "qwen3-asr-1.7b"
-_QWEN_ALIGNER_KEY = "qwen3-forced-aligner-0.6b"
 
 
 def resolve_key(key_or_alias: str) -> str:

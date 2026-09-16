@@ -35,7 +35,6 @@ SHA = "a" * 40
 
 class _TmpTree(unittest.TestCase):
     def setUp(self):
-        import tempfile
 
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -108,10 +107,6 @@ class TestGcProtectsDeployedLocks(_TmpTree):
     def _hand_provision(self, rev: str, stale: float) -> None:
         """Create a revision dir WITHOUT touching history.jsonl (as if the
         models tree predates the journal or history was rotated)."""
-        from test_provision import make_source
-        import shutil
-        import subprocess
-        import sys as _sys
 
         d = self.models_root / "qwen3-asr-1.7b" / rev
         d.mkdir(parents=True)
