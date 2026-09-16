@@ -173,7 +173,9 @@ class TestModelMap(unittest.TestCase):
         self.assertEqual(MODEL_MAP["qwen3-asr"], "qwen3-asr")
 
     def test_whisper_models_unchanged(self):
-        self.assertEqual(MODEL_MAP["whisper-1"], "large-v3-turbo")
+        """E6: whisper-1 alias is no longer hard-coded (routes via env);
+        the explicit large-v3-turbo entry is unchanged."""
+        self.assertNotIn("whisper-1", MODEL_MAP)
         self.assertEqual(MODEL_MAP["large-v3-turbo"], "large-v3-turbo")
 
 

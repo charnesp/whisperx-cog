@@ -110,7 +110,8 @@ def mock_cog_urlopen_factory(delay=0, fail_status=None, output=None):
 
 class TestOpenAiCompatUnit(unittest.TestCase):
     def test_model_map_whisper1(self):
-        self.assertEqual(MODEL_MAP["whisper-1"], "large-v3-turbo")
+        """E6: whisper-1 left MODEL_MAP; unset env keeps large-v3-turbo default."""
+        self.assertNotIn("whisper-1", MODEL_MAP)
 
     def test_model_map_diarize_model(self):
         self.assertEqual(MODEL_MAP["gpt-4o-transcribe-diarize"], "large-v3-turbo")
