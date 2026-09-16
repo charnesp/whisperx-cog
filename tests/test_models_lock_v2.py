@@ -231,5 +231,43 @@ class TestBackwardCompatV1(unittest.TestCase):
                 models_lock.parse_lock(_fake_lock_path(Path(tmp), bad))
 
 
+class TestParseAgreementWithLockAudit(unittest.TestCase):
+    """BLUE: parse_lock and lock_audit.load_lock_v2 must agree on the real lock.
+
+    Both tools read the same models.lock (boot validator vs provisioner/
+    audit): the derived expected_files + sizes must match the PyYAML view
+    of the v2 schema, else one of the two would enforce a phantom pin.
+    """
+
+    def test_parse_lock_matches_yaml_view_on_real_lock(self):
+        import yaml
+
+        from scripts.lock_audit import load_lock_v2
+
+        raw = yaml.safe_load(LOCK_SRC.read_text())
+        v2 = load_lock_v2(LOCK_SRC)
+        self.assertEqual(v2, raw)
+        lock = models_lock.parse_lock(LOCK_SRC)
+        for model in v2["models"]:
+            key = models_lock._lock_key(model["repo"])
+            entry = lock[key]
+            self.assertEqual(entry["revision"], model["revision"])
+            paths = [f["path"] for f in model["files"]]
+            self.assertEqual(entry["expected_files"], paths)
+            declared_sizes = {
+                f["path"]: f["size"] for f in model["files"] if f.get("size")
+            }
+            self.assertEqual(entry.get("sizes", {}), declared_sizes)
+
+    def test_expected_sizes_fast_validate_path_uses_derived_sizes(self):
+        """expected_sizes (T2) must reflect files[].size (T5) on the real lock."""
+        lock = models_lock.parse_lock(LOCK_SRC)
+        sizes = models_lock.expected_sizes(lock)
+        self.assertEqual(sizes[("tiny", "model.bin")], 75538270)
+        self.assertEqual(
+            sizes[("qwen3-forced-aligner-0.6b", "model.safetensors")], 1835544544
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
