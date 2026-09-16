@@ -37,23 +37,12 @@ jobs:
           df -h
 
       - name: Compute tags
+        # Calcul des tags délégué à scripts/compute_image_tags.sh (testable
+        # unitairement, revue T7+T4b): garde :latest en égalité exacte
+        # refs/heads/main / refs/heads/master — jamais de prefix-match.
         run: |
-          SHORT_SHA="${GITHUB_SHA::8}"
-          MAIN_SHA="${GITHUB_REF::12}"
           IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          TAGS="$IMAGE:sha-$SHORT_SHA $IMAGE:canary"
-          if [ "$MAIN_SHA" = "refs/heads/m" ]; then
-            TAGS="$TAGS $IMAGE:latest"
-          fi
-          if [ "${GITHUB_REF_NAME}" = "feat/qwen3-asr-backend" ]; then
-            TAGS="$TAGS $IMAGE:feat-qwen3-asr-backend"
-          fi
-          {
-            echo "IMAGE=$IMAGE"
-            echo "TAGS=$TAGS"
-            echo "IS_MAIN=$([ "$MAIN_SHA" = "refs/heads/m" ] && echo true || echo false)"
-            echo "SHORT_SHA=$SHORT_SHA"
-          } >> "$GITHUB_ENV"
+          eval "$(IMAGE="$IMAGE" bash scripts/compute_image_tags.sh)"
 
       - name: Setup Cog
         uses: replicate/setup-cog@v2
@@ -75,7 +64,7 @@ jobs:
       - name: Build image with Cog
         run: cog build --progress=plain -t ${{ env.IMAGE }}:sha-${{ env.SHORT_SHA }}
 
-      - name: Tag additional refs (latest=false hors main)
+      - name: Tag additional refs (sha-/canary/feat ; :latest si main/master exact)
         run: |
           for t in $TAGS; do
             docker tag "$IMAGE:sha-$SHORT_SHA" "$t"

@@ -12,6 +12,7 @@ on:
       - "feat/**"
     paths:
       - "scripts/provision.py"
+      - "models_registry.py"
       - "Dockerfile.provisioner"
       - "models.lock"
       - ".github/workflows/provisioner-docker-publish.yml"
@@ -33,21 +34,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Compute tags
+        # Calcul des tags délégué à scripts/compute_image_tags.sh (testable
+        # unitairement, revue T7+T4b): garde :latest en égalité exacte
+        # refs/heads/main / refs/heads/master — jamais de prefix-match.
         run: |
-          SHORT_SHA="${GITHUB_SHA::8}"
-          IMAGE="ghcr.io/charnesp/whisperx-provisioner"
-          TAGS="$IMAGE:sha-$SHORT_SHA"
-          if [ "${GITHUB_REF_NAME}" = "feat/qwen3-asr-backend" ]; then
-            TAGS="$TAGS $IMAGE:feat-qwen3-asr-backend"
-          fi
-          if [ "${GITHUB_REF::12}" = "refs/heads/m" ]; then
-            TAGS="$TAGS $IMAGE:latest"
-          fi
-          {
-            echo "TAGS=$TAGS"
-            echo "SHORT_SHA=$SHORT_SHA"
-            echo "IS_MAIN=$([ "${GITHUB_REF::12}" = "refs/heads/m" ] && echo true || echo false)"
-          } >> "$GITHUB_ENV"
+          eval "$(IMAGE="ghcr.io/charnesp/whisperx-provisioner" bash scripts/compute_image_tags.sh)"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

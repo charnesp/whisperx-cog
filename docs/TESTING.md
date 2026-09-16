@@ -29,6 +29,8 @@ Run `make -f Makefile.harness check` (or `ci`) after every RED/GREEN cycle and b
 
 - stdlib `unittest` only (no pytest)
 - bridge tests inject `urlopen_fn`; never start Cog or WhisperX in unit tests
+- test venv (`/opt/data/tmp/e5finish-venv`) needs `pyyaml` + `requests`:
+  `requests` is used by `scripts/lock_audit.py` (and its tests)
 
 ## OpenSpec
 
