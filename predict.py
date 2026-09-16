@@ -370,7 +370,17 @@ class Predictor(BasePredictor):
             if is_qwen:
                 assert_qwen_enabled()
 
-            whisper_arch = resolve_whisper_model_path(whisper_model)
+            # Whisper-only resolution: resolve_whisper_model_path knows the
+            # faster-whisper keys only (ENV_OVERRIDES / WHISPER_MODEL_HF_IDS),
+            # so calling it on the qwen path raised KeyError 'qwen3-asr-1.7b'
+            # (prod canary). The qwen branch below resolves its own baked
+            # snapshot via resolve_qwen_snapshot_dir. The detect_language loop
+            # (whisper_arch consumer) is unreachable on qwen:
+            # should_detect_language returns False for whisper_model=qwen3-asr.
+            whisper_arch = None
+            if not is_qwen:
+                whisper_arch = resolve_whisper_model_path(whisper_model)
+
             asr_options = build_asr_options(
                 temperature=temperature,
                 initial_prompt=initial_prompt,
