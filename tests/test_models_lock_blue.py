@@ -29,8 +29,11 @@ def _build(root: Path, key: str) -> None:
     entry = REAL_LOCK[key]
     d = root / key / entry["revision"]
     d.mkdir(parents=True)
+    # v2 lock carries per-file sizes: provisioning means the real byte
+    # count (the boot validator enforces size since E5-LOCK-SYNC).
+    sizes = entry.get("sizes", {})
     for name in entry["expected_files"]:
-        (d / name).write_bytes(b"w")
+        (d / name).write_bytes(b"w" * sizes.get(name, 1))
     (d / ".complete").write_text("")
 
 
