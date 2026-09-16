@@ -86,6 +86,7 @@ _HOTWORD_CONTEXT_KEYWORDS = (
     "edge",
     "héberge",
     "hosting",
+    "cloud",
     "to",
     "téraoctet",
     "teraoctet",
@@ -123,8 +124,20 @@ RUNS = default_run_specs()
 
 
 def hash_transcript(text: str) -> str:
-    """SHA-256 of the transcript text — bit-identical regression key (6.2/6.4)."""
+    """SHA-256 of the transcript text — text-level invariance key (6.4)."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def hash_segments(segments: list[dict]) -> str:
+    """SHA-256 of the canonical JSON (sort_keys) of the full segments — 6.2/6.4.
+
+    The regression invariance covers the complete segments, not text-only:
+    text/start/end plus word-level detail (each word's word/start/end and its
+    speaker label after assign_word_speakers, when present). Any change in
+    timing, word segmentation or speaker assignment changes the hash.
+    """
+    canonical = json.dumps(segments, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def count_hotword_occurrences(text: str, terms: list[str]) -> dict[str, int]:
@@ -216,8 +229,10 @@ def word_timestamps_present(result: dict) -> bool:
 def words_carry_speakers(result: dict) -> bool:
     """After diarization, words (from the ForcedAligner) carry a speaker label (6.5).
 
-    Proves assign_word_speakers received the qwen ForcedAligner words: the
-    speaker key only exists when the handoff happened.
+    Proves assign_word_speakers received the qwen ForcedAligner words: every
+    segment must carry words and every word a speaker key. A segment without
+    words is NOT vacuously ok — the align/diarize wiring is what produces
+    them, so a missing words list means the handoff never happened.
     """
     segments = (result or {}).get("segments") or []
     if not segments:
@@ -225,7 +240,7 @@ def words_carry_speakers(result: dict) -> bool:
     for seg in segments:
         words = seg.get("words") or []
         if not words:
-            continue
+            return False
         if not all(w.get("speaker") for w in words):
             return False
     return True
@@ -266,12 +281,24 @@ def run_single(
     model_factory: Callable[[str], Any],
     clock: Callable[[], float] = time.time,
     batch_size: int | None = None,
+    align_fn: Callable[[Any, dict], dict] | None = None,
+    diarize_fn: Callable[[Any, dict], dict] | None = None,
+    vram_peak_fn: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
-    """Execute one golden-set run and collect its metrics.
+    """Execute one golden-set run and collect its metrics (6.1, 6.5).
 
     Fully injectable for GPU-free testing: load_audio_fn / model_factory /
-    clock. On the real GPU, model_factory builds the predictor's model via
-    predict.load functions and torch.cuda.max_memory_allocated provides VRAM.
+    clock / align_fn / diarize_fn / vram_peak_fn (CI mocks). On the real GPU
+    the defaults wire the predictor pipeline exactly like predict._run_predict:
+    transcribe -> align (align_qwen on the qwen path, align standard on the
+    turbo path — ForcedAligner word-level timestamps) -> diarize +
+    whisperx.assign_word_speakers (speaker labels on the aligned words). The
+    gate on word_timestamps_present / words_carry_speakers (6.5) is therefore
+    actually executable: the wiring produces the words/speaker keys it checks.
+
+    Per-run VRAM (FIX 7): vram_peak_fn is read at the end of the run (torch
+    max_memory_allocated); the real flow resets the peak counter before each
+    run via vram_reset_real, so vram_peak_gb is per-run, not a global max.
     """
     model_name = run_spec["whisper_model"]
     hotwords = run_spec.get("hotwords")
@@ -288,21 +315,66 @@ def run_single(
         result = model.transcribe(audio, batch_size=effective_batch)
     duration_s = clock() - start
 
+    # 6.5 wiring (injectable; real GPU defaults below). align produces the
+    # word-level timestamps, diarize produces the speaker turns and labels
+    # the aligned words via assign_word_speakers — the keys this run's
+    # gates check. Without the wiring both gates would fail on real output.
+    if align_fn is not None:
+        result = align_fn(audio, result)
+    if diarize_fn is not None:
+        result = diarize_fn(audio, result)
+
+    segments = (result or {}).get("segments") or []
     transcript = extract_transcript_text(result)
     return {
         "whisper_model": model_name,
         "hotwords": hotwords,
         "transcript": transcript,
         "transcript_hash": hash_transcript(transcript),
+        # 6.2/6.4 regression hash now covers the full segments (words/speaker)
+        "segments_hash": hash_segments(segments),
         "language": (result or {}).get("language"),
         "batch_size": effective_batch,
         "duration_s": duration_s,
+        "vram_peak_gb": vram_peak_fn() if vram_peak_fn else None,
         "word_timestamps_present": word_timestamps_present(result),
         "words_carry_speakers": words_carry_speakers(result),
         # raw segments kept so false-positive scanning can locate hotwords
-        "segments": (result or {}).get("segments") or [],
+        "segments": segments,
         "ok": word_timestamps_present(result) and words_carry_speakers(result),
     }
+
+
+def default_align_fn(audio: Any, result: dict) -> dict:
+    """Real GPU align default: qwen path -> predict.align_qwen (Qwen
+    Qwen3-ForcedAligner-0.6B from the baked snapshot), turbo path ->
+    predict.align (standard ForcedAligner). Mirrors predict._run_predict's
+    align branch, including the language-coverage guard."""
+    predict = _load_predict()
+    import importlib
+
+    detected_language = (result or {}).get("language")
+    if (result or {}).get("whisper_model") == "qwen3-asr":
+        return predict.align_qwen(audio, result, False)
+    alignment_module = importlib.import_module("whisperx.alignment")
+    if detected_language in alignment_module.DEFAULT_ALIGN_MODELS_TORCH or detected_language in (
+        alignment_module.DEFAULT_ALIGN_MODELS_HF
+    ):
+        return predict.align(audio, result, False)
+    print(f"Cannot align output: language {detected_language} not supported for alignment", flush=True)
+    return result
+
+
+def default_diarize_fn(audio: Any, result: dict) -> dict:
+    """Real GPU diarize default: predict.diarize already ends with
+    whisperx.assign_word_speakers(diarize_segments, result,
+    speaker_embeddings), which labels the ForcedAligner words with speaker
+    ids — exactly the 6.5 handoff."""
+    predict = _load_predict()
+    from hf_token import resolve_huggingface_token
+
+    hf_token = resolve_huggingface_token(None)
+    return predict.diarize(audio, result, False, hf_token, None, None)
 
 
 def build_qwen_context(hotwords: str | None) -> str:
@@ -361,6 +433,13 @@ def audio_duration_real(path: str) -> float:
     return predict.get_audio_duration(path) / 1000.0
 
 
+def vram_reset_real() -> None:
+    """Reset the CUDA peak-memory counter (call before each run, FIX 7)."""
+    import torch
+
+    torch.cuda.reset_peak_memory_stats()
+
+
 def vram_peak_real() -> float:
     """Peak VRAM in GB since the last reset (torch.cuda.max_memory_allocated)."""
     import torch
@@ -384,11 +463,17 @@ def build_report(
     audio_durations_s: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Full JSON-serialisable golden-set report."""
+    vram_peak_by_run = {
+        name: run["vram_peak_gb"] for name, run in runs.items() if run.get("vram_peak_gb") is not None
+    }
     return {
         "runs": runs,
         "word_timestamps_present": word_timestamps_present,
         "words_carry_speakers": words_carry_speakers,
         "vram_peak_gb": vram_peak_gb,
+        # per-run VRAM peaks (FIX 7): each run resets the CUDA peak counter,
+        # so these are independent measurements, not one global max
+        "vram_peak_by_run": vram_peak_by_run,
         "rtfx": rtfx,
         "false_positives": false_positives,
         "regression_hashes": regression_hashes or {},
@@ -406,6 +491,10 @@ def evaluate_report(report: dict[str, Any]) -> dict[str, Any]:
         failures.append("words_carry_speakers: assign_word_speakers did not label ForcedAligner words")
     if not vram_ok(report.get("vram_peak_gb", float("inf"))):
         failures.append(f"vram: peak {report.get('vram_peak_gb')} GB >= {VRAM_LIMIT_GB} GB")
+    # per-run VRAM gate (FIX 7): any single run above the limit fails
+    for run_name, peak in (report.get("vram_peak_by_run") or {}).items():
+        if not vram_ok(peak):
+            failures.append(f"vram: run {run_name} peak {peak} GB >= {VRAM_LIMIT_GB} GB")
     rtfx = report.get("rtfx")
     if rtfx is None or not rtfx_ok(rtfx):
         failures.append(f"rtfx: {rtfx} outside plausible range ({RTFX_MIN}-{RTFX_MAX})")
@@ -436,25 +525,42 @@ def run_golden_set(
     model_factory: Callable | None = None,
     clock: Callable[[], float] = time.time,
     vram_peak_fn: Callable[[], float] | None = None,
+    vram_reset_fn: Callable[[], None] | None = None,
+    align_fn: Callable[[Any, dict], dict] | None = None,
+    diarize_fn: Callable[[Any, dict], dict] | None = None,
     audio_duration_fn: Callable[[str], float] | None = None,
     recorded_hashes: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Execute the full golden set (3 runs) and evaluate it. Injectable for CI."""
+    """Execute the full golden set (3 runs) and evaluate it. Injectable for CI.
+
+    6.5 wiring: align_fn/diarize_fn default to the real GPU functions
+    (default_align_fn / default_diarize_fn — align_qwen vs align dispatch and
+    diarize + assign_word_speakers). On the real GPU path each run starts
+    with a CUDA peak-counter reset (vram_reset_real) so vram_peak_fn reads a
+    per-run peak (FIX 7); CI mocks supply their own functions.
+    """
     load_audio_fn = load_audio_fn or load_audio_real
     model_factory = model_factory or model_factory_real
+    align_fn = align_fn or default_align_fn
+    diarize_fn = diarize_fn or default_diarize_fn
     vram_peak_fn = vram_peak_fn or vram_peak_real
+    vram_reset_fn = vram_reset_real if vram_reset_fn is None else vram_reset_fn
     audio_duration_fn = audio_duration_fn or audio_duration_real
 
     runs: dict[str, dict[str, Any]] = {}
     words_speakers_ok = True
     all_fps: list[dict[str, Any]] = []
     for name, spec in RUNS.items():
+        vram_reset_fn()  # per-run VRAM peak (FIX 7)
         run = run_single(
             run_spec=spec,
             audio_path=audio_path,
             load_audio_fn=load_audio_fn,
             model_factory=model_factory,
             clock=clock,
+            align_fn=align_fn,
+            diarize_fn=diarize_fn,
+            vram_peak_fn=vram_peak_fn,
         )
         runs[name] = run
         words_speakers_ok = words_speakers_ok and run["words_carry_speakers"]

@@ -122,8 +122,15 @@ def run_pip_audit(req_file: Path, ignore: set[str]) -> tuple[list[dict], list[st
 
 def main() -> int:
     if shutil_which(PKG_AUDIT_BIN) is None:
-        print(f"SKIP pkg-audit: {PKG_AUDIT_BIN} not on PATH (install: uv tool install pip-audit)")
-        return 0
+        # Hard gate (FIX 6): a missing pip-audit must fail the gate, never
+        # silently SKIP+exit 0 — a skipped audit is an unaudited dependency
+        # set reaching production.
+        print(
+            f"FAIL pkg-audit: {PKG_AUDIT_BIN} not on PATH — install it first "
+            "(uv tool install pip-audit or pip install pip-audit)",
+            file=sys.stderr,
+        )
+        return 1
     ignore = set(os.environ.get(IGNORE_ENV, "").split())
     pinned, _git = parse_requirements(REQUIREMENTS.read_text())
     # torch==2.8.0 is pinned for the Cog CUDA wheel index (not on PyPI for
