@@ -23,6 +23,11 @@ from whisperx.diarize import DiarizationPipeline
 from json_sanitize import sanitize_error_message, sanitize_for_json
 from hf_token import require_diarization_token
 from model_paths import resolve_vad_source_path, resolve_whisper_model_path
+from models_registry import (
+    MODELS,
+    local_candidates,
+    resolve_key as _resolve_model_key,
+)
 import tempfile
 import time
 import torch
@@ -40,23 +45,18 @@ QWEN_MODEL_NAME = "qwen3-asr"
 QWEN_DEFAULT_BATCH = 4  # measured OOM at larger batches on the shared 16 GB GPU
 QWEN_MAX_BATCH = 8
 QWEN_CONTEXT_CAP = 2000  # chars; truncation logs carry lengths only, never content
-QWEN_ASR_HF_REPO = "Qwen/Qwen3-ASR-1.7B"
-QWEN_ALIGNER_HF_REPO = "Qwen/Qwen3-ForcedAligner-0.6B"
-# Local snapshot dirs baked into /models by cog.yaml (see models.lock revisions)
-QWEN_MODEL_LOCAL_PATHS = [
-    "/models/qwen3-asr-1.7b",
-    "./models/qwen3-asr-1.7b",
-]
-QWEN_ALIGNER_LOCAL_PATHS = [
-    "/models/qwen3-forced-aligner-0.6b",
-    "./models/qwen3-forced-aligner-0.6b",
-]
+# Model constants come from the unified registry (E5-CODE-1 T1): single
+# declarative source of truth, no hardcoded paths/repos here.
+_QWEN_MODEL_KEY = _resolve_model_key(QWEN_MODEL_NAME)
+_QWEN_ALIGNER_KEY = "qwen3-forced-aligner-0.6b"
+QWEN_ASR_HF_REPO = MODELS[_QWEN_MODEL_KEY].hf_repo
+QWEN_ALIGNER_HF_REPO = MODELS[_QWEN_ALIGNER_KEY].hf_repo
+# Local snapshot dirs baked into /models (see models.lock revisions)
+QWEN_MODEL_LOCAL_PATHS = local_candidates(_QWEN_MODEL_KEY)
+QWEN_ALIGNER_LOCAL_PATHS = local_candidates(_QWEN_ALIGNER_KEY)
 # Non-empty weight files that must exist in each baked snapshot
-QWEN_ASR_WEIGHT_FILES = [
-    "model-00001-of-00002.safetensors",
-    "model-00002-of-00002.safetensors",
-]
-QWEN_ALIGNER_WEIGHT_FILES = ["model.safetensors"]
+QWEN_ASR_WEIGHT_FILES = list(MODELS[_QWEN_MODEL_KEY].weight_files)
+QWEN_ALIGNER_WEIGHT_FILES = list(MODELS[_QWEN_ALIGNER_KEY].weight_files)
 
 logger = logging.getLogger(__name__)
 

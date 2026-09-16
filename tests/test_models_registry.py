@@ -20,6 +20,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 EXPECTED_KEYS = {
     "tiny",
@@ -217,8 +218,6 @@ class TestPredictConsumesRegistry(unittest.TestCase):
         self.assertNotIn("Qwen/", src)
 
     def test_model_paths_source_has_no_hardcoded_hf_repos(self):
-        import model_paths
-
         src = (REPO_ROOT / "model_paths.py").read_text()
         self.assertNotIn("Systran/", src)
         self.assertNotIn("mobiuslabsgmbh/", src)
