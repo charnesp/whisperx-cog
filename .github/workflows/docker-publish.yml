@@ -43,6 +43,9 @@ jobs:
         run: |
           IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           eval "$(IMAGE="$IMAGE" bash scripts/compute_image_tags.sh)"
+          # Persister les variables aux steps suivants (eval ne survit pas au step)
+          printf 'IMAGE=%s\nTAGS=%s\nIS_DEFAULT_BRANCH=%s\nSHORT_SHA=%s\n' \
+            "$IMAGE" "$TAGS" "$IS_DEFAULT_BRANCH" "$SHORT_SHA" >> "$GITHUB_ENV"
 
       - name: Setup Cog
         uses: replicate/setup-cog@v2

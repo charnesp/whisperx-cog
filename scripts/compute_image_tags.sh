@@ -31,7 +31,12 @@ if [ "$IS_DEFAULT_BRANCH" = "true" ]; then
   TAGS="$TAGS $IMAGE:latest"
 fi
 
-echo "IMAGE=$IMAGE"
-echo "TAGS=$TAGS"
-echo "IS_DEFAULT_BRANCH=$IS_DEFAULT_BRANCH"
-echo "SHORT_SHA=$SHORT_SHA"
+# Sorties quotées: ces lignes sont eval()-ées par les workflows
+# (eval "$(compute_image_tags.sh)"). Sans quotes, TAGS multi-mots est
+# parsé: 1er mot assigné, les suivants EXÉCUTÉS comme commandes → exit 127
+# ('ghcr.io/...:canary: No such file or directory'). printf %q préserve la
+# valeur entière pour bash.
+printf 'IMAGE=%q\n' "$IMAGE"
+printf 'TAGS=%q\n' "$TAGS"
+printf 'IS_DEFAULT_BRANCH=%q\n' "$IS_DEFAULT_BRANCH"
+printf 'SHORT_SHA=%q\n' "$SHORT_SHA"
