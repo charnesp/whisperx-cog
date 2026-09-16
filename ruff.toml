@@ -1,0 +1,21 @@
+# Minimal ruff config — harness `lint` gate.
+# Lint-only: existing code is intentionally NOT reformatted by this gate
+# (only files written alongside the gate itself must be clean).
+# E402: predict.py intentionally imports after warnings.filterwarnings
+# (suppress torchcodec noise before pyannote import) — accepted pattern.
+# E702/E701: compact one-line guard returns are the established bridge style.
+[lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501", # long lines tolerated
+    "E402", # predict.py: deliberate imports-after-warnings ordering
+    "E701", # bridge: established compact guard style, not reformatted by gate
+    "E702",
+]
+
+[lint.per-file-ignores]
+# Test files keep the same baseline; new golden-set test files stay clean.
+"tests/*" = []
+
+[lint.isort]
+known-first-party = ["bridge"]

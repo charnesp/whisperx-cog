@@ -1,6 +1,5 @@
 """Unit tests for Whisper model path resolution (no GPU)."""
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
