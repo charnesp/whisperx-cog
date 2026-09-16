@@ -84,9 +84,9 @@
 
 ## 7. Documentation
 
-- [ ] 7.1 `docs/DATA_CONTRACTS.md`: `qwen3-asr` model row, hotwords→context semantics, per-model default batch
-- [ ] 7.2 `docs/BRIDGE.md`: `ENABLE_QWEN` kill-switch, batch_size passthrough rule, no-hotwords-in-logs rule
-- [ ] 7.3 README OpenAI STT section: `model=qwen3-asr` example with hotwords
+- [x] 7.1 `docs/DATA_CONTRACTS.md`: `qwen3-asr` model row, hotwords→context semantics, per-model default batch <!-- fait (16/09, commit 5b7e870): row qwen3-asr + batch par modèle (resolve_qwen_batch_size, 1..8) + hotwords→context (format_qwen_context, pas de post-filtering) -->
+- [x] 7.2 `docs/BRIDGE.md`: `ENABLE_QWEN` kill-switch, batch_size passthrough rule, no-hotwords-in-logs rule <!-- fait (16/09, commit 5b7e870): gate ENABLE_QWEN (HTTP 400 si désactivé), passthrough hotwords uniquement qwen path, hotwords jamais loggés (longueurs seules) -->
+- [x] 7.3 README OpenAI STT section: `model=qwen3-asr` example with hotwords <!-- fait (16/09, commit 5b7e870): curl model=qwen3-asr + hotwords + language, ligne table + note ENABLE_QWEN/hotwords→context -->
 - [x] 7.4 `make -f Makefile.harness check` green <!-- fait (16/09): make -f Makefile.harness ci exit 0 en local (410 tests OK, ruff All checks passed, pkg-audit 0 vulnérabilités, AUDIT OK); exécuté après les edits docs pour vérifier que ruff/audit ne casse pas sur les .md -->
 
 ## 8. Deploy (requires explicit go-ahead — out of this change's scope)
