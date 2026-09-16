@@ -595,7 +595,6 @@ def model_factory_real(model_name: str):
         import importlib
 
         snapshot_dir = predict.resolve_qwen_snapshot_dir()
-        predict.assert_baked_qwen_weights(snapshot_dir, predict.QWEN_ASR_WEIGHT_FILES)
         asr_qwen = importlib.import_module("whisperx.asr_qwen")
         model = asr_qwen.load_model(
             snapshot_dir,
@@ -603,7 +602,6 @@ def model_factory_real(model_name: str):
             language="fr",
             vad_options=None,
             qwen_dtype="float16",
-            local_files_only=True,
         )
     else:
         arch = predict.resolve_whisper_model_path(model_name)

@@ -1,15 +1,12 @@
-"""GPU-free unit tests for models_lock.py + the boot validator (E5-CODE-1 T2).
+"""GPU-free unit tests for models_lock.py (E5-CODE-1 T2, amended E5-LEGACY-HF).
 
-RED cycle: written FIRST — must fail with ModuleNotFoundError because
-models_lock.py does not exist yet.
-
-Contract (plan-e5-deploiement-canary.md §3 T2):
+Contract:
 - parse_lock(): reads models.lock (repo, revision, expected_files per model)
 - expected_paths(root): /models/<key>/<sha40>/ per registry key
-- fast_validate(root): os.stat + exact size + .complete marker, NEVER
-  sha256 at boot; fail-fast with exit code 78 (EX_CONFIG)
-- structured error E_MODEL_NOT_PROVISIONED model=... rev=... path=...
-  with the exact provisioner remediation command + -e HF_TOKEN mention
+- fast_validate / boot_validate remain available as PROVISIONING TOOLS
+  (CI / lock_audit), but the runtime boot gate in Predictor.setup() is
+  REMOVED (E5-LEGACY-HF): the container starts and downloads whatever is
+  missing from HF.
 - anti-leak: error text never contains a token VALUE
 """
 
@@ -390,7 +387,9 @@ class TestSecretLeakGuard(unittest.TestCase):
 
 
 class TestSetupIntegration(unittest.TestCase):
-    """The boot validator must run FIRST inside Predictor.setup()."""
+    """E5-LEGACY-HF: Predictor.setup() no longer runs any boot validation —
+    the container starts and downloads whatever is missing. The VAD copy
+    stays."""
 
     @classmethod
     def setUpClass(cls):
@@ -398,83 +397,25 @@ class TestSetupIntegration(unittest.TestCase):
 
         cls.predict = install()
 
-    def test_setup_calls_validator_before_anything_else(self):
+    def test_setup_has_no_boot_validator(self):
+        src = (REPO_ROOT / "predict.py").read_text()
+        self.assertNotIn("validate_boot_models", src)
+        self.assertNotIn("E_MODEL_NOT_PROVISIONED", src)
+
+    def test_setup_still_prepares_vad_cache(self):
         import tempfile
-
-        import models_lock
-
-        calls = []
+        from unittest import mock
 
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "models"
-            root.mkdir()
-            models_lock.parse_lock(_fake_lock_path(Path(tmp)))
-            _build_baked(
-                root,
-                "tiny",
-                "a" * 40,
-                {"config.json": 10, "model.bin": 100},
-            )
-            _build_baked(
-                root,
-                "qwen3-asr-1.7b",
-                "b" * 40,
-                {
-                    "config.json": 10,
-                    "model-00001-of-00002.safetensors": 100,
-                    "model-00002-of-00002.safetensors": 200,
-                },
-            )
-
-            predictor = self.predict.Predictor()
-
-            real_vad = self.predict.resolve_vad_source_path
-            real_validate = self.predict.validate_boot_models
-
-            def fake_validate(models_root=None):
-                calls.append("validate")
-
-            def fake_vad():
-                calls.append("vad")
-                return None
-
-            with self._mock_env(models_root=str(root), lock_path=_fake_lock_path(Path(tmp))):
-                self.predict.resolve_vad_source_path = fake_vad
-                self.predict.validate_boot_models = fake_validate
-                try:
-                    predictor.setup()
-                finally:
-                    self.predict.resolve_vad_source_path = real_vad
-                    self.predict.validate_boot_models = real_validate
-
-        self.assertEqual(calls, ["validate", "vad"])
-
-    def _mock_env(self, models_root, lock_path):
-        import contextlib
-
-        @contextlib.contextmanager
-        def ctx():
-            import unittest.mock as mock
-
-            with mock.patch.dict(
-                os.environ,
-                {"MODELS_DIR": models_root, "MODELS_LOCK_PATH": str(lock_path)},
-            ):
-                yield
-
-        return ctx()
-
-    def test_setup_fails_fast_when_not_provisioned(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "models"
-            root.mkdir()
-            predictor = self.predict.Predictor()
-            with self._mock_env(models_root=str(root), lock_path=_fake_lock_path(Path(tmp))):
-                with self.assertRaises(Exception) as ctx:
-                    predictor.setup()
-            self.assertIn("E_MODEL_NOT_PROVISIONED", str(ctx.exception))
+            src_vad = Path(tmp) / "src" / "whisperx-vad-segmentation.bin"
+            src_vad.parent.mkdir()
+            src_vad.write_bytes(b"vad")
+            with mock.patch.object(
+                self.predict, "resolve_vad_source_path", return_value=str(src_vad)
+            ), mock.patch("predict.os.makedirs"), mock.patch("predict.shutil.copy") as cp:
+                predictor = self.predict.Predictor()
+                predictor.setup()
+            cp.assert_called_once()
 
 
 if __name__ == "__main__":

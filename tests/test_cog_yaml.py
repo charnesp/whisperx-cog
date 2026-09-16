@@ -1,9 +1,14 @@
-"""E5 T6 — cog.yaml dé-bake + env offline (RED/GREEN).
+"""Tests E5-LEGACY-HF — cog.yaml WITHOUT offline env (RED/GREEN).
 
-The current cog.yaml bakes ~11 GB of weights into the image via wget in
-build.run. The canary decision (plan E5 §1) forbids weight baking: weights
-live on a host bind mount provisioned by scripts/provision.py. These tests
-parse cog.yaml and fail while any bake remains.
+History: the offline flags (HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1) were
+added as defense-in-depth during the /models de-bake. They are now REMOVED
+from cog.yaml (final Charles decision): the offline env was redundant for
+ASR/aligner and harmful to the only legitimate network call of the diarize
+path (gated pyannote model, first-run download with the container token).
+
+New contract: the environment carries NO offline flag at all. The
+anti-download question for the main models is a provisioning concern
+(models must exist under /models per models.lock), not an env-var concern.
 """
 
 import unittest
@@ -33,17 +38,29 @@ class TestCogYamlDeBaked(unittest.TestCase):
         mkdir_models = [c for c in run if c.strip().startswith("mkdir -p /models")]
         self.assertEqual(mkdir_models, [], "no /models staging dirs in build.run")
 
-    def test_transformers_offline_env(self):
-        env = self.cfg.get("environment", [])
-        self.assertIn(
-            "TRANSFORMERS_OFFLINE=1",
-            env,
-            "environment must pin TRANSFORMERS_OFFLINE=1",
-        )
+    def test_no_offline_env_at_all(self):
+        """RED (E5-LEGACY-HF): cog.yaml must NOT pin any offline env var.
 
-    def test_hf_hub_offline_env(self):
+        Rationale (final Charles decision, replaces the previous T6 tests
+        that REQUIRED the offline pins): the offline env was global defense
+        from the de-bake, redundant for ASR/aligner and harmful to diarize
+        — HF_HUB_OFFLINE=1 ignored the HF token and broke the gated
+        pyannote download on the first run (LocalEntryNotFoundError).
+        """
         env = self.cfg.get("environment", [])
-        self.assertIn("HF_HUB_OFFLINE=1", env, "environment must keep HF_HUB_OFFLINE=1")
+        offenders = [
+            e
+            for e in env
+            if e.startswith(("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"))
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            "environment must carry no offline flag (offline env removed: it "
+            "blocked the only legitimate network call — gated pyannote on "
+            "diarize; provisioning lives in model resolution, not in a "
+            "global env)",
+        )
 
     def test_cudnn_compat_env_untouched(self):
         env = self.cfg.get("environment", [])

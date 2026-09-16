@@ -436,33 +436,21 @@ class TestQwenLanguageHandling(unittest.TestCase):
         self.assertFalse(predict.should_detect_language("large-v3-turbo", "fr"))
 
 
-class TestBakedQwenWeights(unittest.TestCase):
-    def test_fail_fast_when_baked_weights_missing(self):
-        with self.assertRaises(RuntimeError) as ctx:
-            predict.assert_baked_qwen_weights("/models/nonexistent")
-        self.assertIn("/models/nonexistent", str(ctx.exception))
+class TestQwenWeightsRegistryDerivation(unittest.TestCase):
+    """E5-LEGACY-HF: the fail-hard weights shim is gone; the expected
+    weight-file lists stay derived from the registry (provisioning tooling
+    still uses them)."""
 
-    def test_pass_when_weight_present(self):
-        import tempfile
+    def test_weight_files_come_from_registry(self):
+        from models_registry import MODELS
 
-        with tempfile.TemporaryDirectory() as tmp:
-            for name in predict.QWEN_ASR_WEIGHT_FILES:
-                (Path(tmp) / name).write_bytes(b"w")
-            predict.assert_baked_qwen_weights(tmp)  # must not raise
+        self.assertEqual(
+            predict.QWEN_ASR_WEIGHT_FILES,
+            list(MODELS["qwen3-asr-1.7b"].weight_files),
+        )
 
-    def test_fail_fast_when_one_weight_missing(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / predict.QWEN_ASR_WEIGHT_FILES[0]).write_bytes(b"w")
-            with self.assertRaises(RuntimeError):
-                predict.assert_baked_qwen_weights(tmp)
-
-    def test_fail_fast_lists_expected_weight_names(self):
-        with self.assertRaises(RuntimeError) as ctx:
-            predict.assert_baked_qwen_weights("/models/empty")
-        msg = str(ctx.exception)
-        self.assertIn("safetensors", msg)
+    def test_no_baked_weights_shim(self):
+        self.assertFalse(hasattr(predict, "assert_baked_qwen_weights"))
 
 
 class TestQwenModelPaths(unittest.TestCase):

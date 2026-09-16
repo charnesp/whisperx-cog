@@ -1,19 +1,16 @@
-"""Whisper / Qwen model path resolution — fail-HARD (E5-CODE-1 T3).
+"""Whisper / Qwen model path resolution — legacy HF fallback (E5-LEGACY-HF).
 
-Resolution order per model key:
+Final Charles decision: NO anti-download guards. Resolution order per
+model key:
 1. explicit env override (registry env_override, e.g. QWEN_MODEL_PATH)
 2. provisioned lock layout  $MODELS_DIR/<key>/<sha40>/  (+ .complete,
    non-empty weights)
-3. ./models/<dirname> ONLY when MODELS_MODE=dev (bash build.sh workflow)
-4. raise ModelNotProvisioned (E_MODEL_NOT_PROVISIONED + provisioner
-   remediation) — NEVER the HuggingFace repo id.
+3. else the HF repo id — runtime download like any HF model (pre-E5
+   legacy behavior). no raise, no env switch.
 
-MODELS_MODE=online is an explicit opt-in (laptop dev): resolve may then
-return the HF repo id. It is NEVER the default.
-
-VAD stays a special case (bundled whisperx asset, outside registry/lock).
-Model constants come from the unified registry (T1); the revisioned
-layout + .complete semantics come from models_lock (T2).
+The 5 main models are provisioned on /models by the host bind mount
+(scripts/provision.py, models.lock v2); the resolver just prefers that
+copy when present. VAD stays a special case (bundled whisperx asset).
 """
 
 from __future__ import annotations
@@ -37,8 +34,7 @@ _WHISPER_KEYS = tuple(sorted(k for k, spec in MODELS.items() if not spec.env_ove
 
 WHISPER_MODEL_HF_IDS: dict[str, str] = {key: hf_repo(key) for key in _WHISPER_KEYS}
 
-# Ordered candidates: baked absolute path first, then repo-relative
-# (legacy flat layouts, still exported for golden_set/build.sh tooling).
+# Legacy flat layout candidates (build.sh dev bake tooling export).
 WHISPER_MODEL_LOCAL_PATHS: dict[str, list[str]] = {
     key: local_candidates(key) for key in _WHISPER_KEYS
 }
@@ -49,9 +45,6 @@ VAD_LOCAL_CANDIDATES = [
     f"./models/vad/{VAD_FILENAME}",
 ]
 
-PROVISIONER_HOST_DIR = "/files/data/whisperx-cog/models"
-PROVISIONER_IMAGE = "ghcr.io/charnesp/whisperx-provisioner:latest"
-
 # Env overrides for the faster-whisper keys (qwen keys carry their own
 # env_override in the registry).
 ENV_OVERRIDES: dict[str, str] = {
@@ -59,25 +52,6 @@ ENV_OVERRIDES: dict[str, str] = {
     "large-v3": "LARGE_V3_PATH",
     "large-v3-turbo": "LARGE_V3_TURBO_PATH",
 }
-
-
-class ModelNotProvisioned(RuntimeError):
-    """Fail-hard resolution error: no local provisioned copy, no fallback."""
-
-
-def _remediation(key: str) -> str:
-    return (
-        f"docker run --rm -v {PROVISIONER_HOST_DIR}:/models "
-        f"{PROVISIONER_IMAGE} provision --model {key}"
-    )
-
-
-def _models_mode() -> str:
-    return os.environ.get("MODELS_MODE", "").strip().lower()
-
-
-def _models_dir() -> str:
-    return os.environ.get("MODELS_DIR") or BAKED_MODELS_ROOT
 
 
 def _dir_has_weights(path: str, weight_files) -> bool:
@@ -116,18 +90,20 @@ _LOCK_CACHE: dict[str, dict] | None = None
 _LOCK_CACHE_MTIME: float | None = None
 
 
-def resolve_model_dir(key: str) -> str:
-    """Resolve a provisioned snapshot dir for a registry key (or alias).
+def _models_dir() -> str:
+    return os.environ.get("MODELS_DIR") or BAKED_MODELS_ROOT
 
-    Order: env override → lock $MODELS_DIR/<key>/<sha40>/ (+ .complete,
-    non-empty weights) → ./models/<dirname> in MODELS_MODE=dev → raise
-    ModelNotProvisioned. NEVER returns the HF repo id (MODELS_MODE=online
-    callers use resolve_hf_repo() explicitly).
+
+def resolve_model_dir(key: str) -> str:
+    """Resolve a snapshot dir for a registry key (or alias) — legacy HF
+    fallback (E5-LEGACY-HF).
+
+    Order: env override → provisioned lock dir $MODELS_DIR/<key>/<sha40>/
+    (+ .complete, non-empty weights) → the HF repo id (runtime download,
+    like any HF model, pre-E5 legacy behavior). No raise.
     """
-    global _LOCK_CACHE
     key = resolve_key(key)
     spec = MODELS[key]
-    tried: list[str] = []
 
     if spec.env_override:
         override = os.environ.get(spec.env_override, "").strip()
@@ -137,60 +113,29 @@ def resolve_model_dir(key: str) -> str:
     lock_entry = _lock().get(key)
     if lock_entry:
         lock_path = os.path.join(_models_dir(), key, lock_entry["revision"])
-        tried.append(lock_path)
-        # Check ALL lock-declared files (index/shard/tokenizer) — the same
-        # set the T2 boot validator enforces — not only the weight files.
         if _dir_has_weights(lock_path, lock_entry["expected_files"]):
             return lock_path
 
-    dev_path = os.path.join("./models", spec.dirname)
-    tried.append(dev_path)
-    if _models_mode() == "dev" and os.path.isdir(dev_path):
-        return dev_path
-
-    if lock_entry:
-        head = (
-            f"E_MODEL_NOT_PROVISIONED model={key} rev={lock_entry['revision']}"
-        )
-    else:
-        head = f"E_MODEL_NOT_PROVISIONED model={key}"
-    raise ModelNotProvisioned(
-        f"{head} — tried: {', '.join(tried)}. "
-        f"Remediation: {_remediation(key)}. "
-        "MODELS_MODE=dev resolves ./models/<dirname>; MODELS_MODE=online is "
-        "the explicit HF-download opt-in."
-    )
+    return hf_repo(key)
 
 
 def resolve_hf_repo(key: str) -> str:
-    """Explicit HF repo id (only for MODELS_MODE=online opt-in callers)."""
+    """Explicit HF repo id for a registry key."""
     return hf_repo(resolve_key(key))
 
 
 def resolve_whisper_model_path(whisper_model: str) -> str:
-    """Fail-hard resolution for the faster-whisper backends.
+    """Resolve the faster-whisper backend source — legacy HF fallback
+    (E5-LEGACY-HF).
 
-    No HF fallback: an unprovisioned model raises ModelNotProvisioned with
-    the paths tried + remediation. MODELS_MODE=online returns the HF repo
-    id (explicit opt-in only).
+    Env override → provisioned lock dir → the HF repo id (runtime
+    download possible). No raise.
     """
     key = resolve_key(whisper_model)
     override = os.environ.get(ENV_OVERRIDES[key], "").strip()
     if override:
         return override
-
-    if _models_mode() == "online":
-        return WHISPER_MODEL_HF_IDS[key]
-
-    try:
-        return resolve_model_dir(key)
-    except ModelNotProvisioned as exc:
-        # Only allege paths actually checked: the flat legacy dir
-        # ./models/<dirname> is tried inside resolve_model_dir (used as a
-        # real candidate in MODELS_MODE=dev); /models/<dirname> is a
-        # legacy layout this resolver never probes, so it must NOT be
-        # alleged here.
-        raise ModelNotProvisioned(str(exc)) from None
+    return resolve_model_dir(key)
 
 
 def resolve_vad_source_path() -> str | None:
