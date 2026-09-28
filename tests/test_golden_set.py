@@ -840,7 +840,7 @@ class TestBatchSizePassthrough(unittest.TestCase):
 
     def setUp(self):
         self.gs = _load_golden_set()
-        self.tmpdir = tempfile.mkdtemp(dir="/opt/data/tmp")
+        self.tmpdir = tempfile.mkdtemp()
         self.output = str(Path(self.tmpdir) / "report.json")
 
     def tearDown(self):
@@ -944,7 +944,7 @@ class TestFreeGpuBetweenRuns(unittest.TestCase):
 
     def setUp(self):
         self.gs = _load_golden_set()
-        self.tmpdir = tempfile.mkdtemp(dir="/opt/data/tmp")
+        self.tmpdir = tempfile.mkdtemp()
         self.output = str(Path(self.tmpdir) / "report.json")
 
     def tearDown(self):
@@ -1025,7 +1025,7 @@ class TestPartialReportAfterEachRun(unittest.TestCase):
 
     def setUp(self):
         self.gs = _load_golden_set()
-        self.tmpdir = tempfile.mkdtemp(dir="/opt/data/tmp")
+        self.tmpdir = tempfile.mkdtemp()
         self.output = str(Path(self.tmpdir) / "report.json")
 
     def tearDown(self):
