@@ -275,9 +275,9 @@ class Predictor(BasePredictor):
                 elapsed_time = time.time_ns() / 1e9 - start_time
                 print(f"Duration to transcribe: {elapsed_time:.2f} s", flush=True)
 
+            del model
             gc.collect()
             torch.cuda.empty_cache()
-            del model
 
             if align_output:
                 alignment_module = importlib.import_module("whisperx.alignment")
@@ -396,9 +396,9 @@ def detect_language(
 
     audio_segment_file_path.unlink()
 
+    del model
     gc.collect()
     torch.cuda.empty_cache()
-    del model
 
     detected_language = {
         "language": language,
@@ -493,9 +493,9 @@ def align(audio, result, debug):
         elapsed_time = time.time_ns() / 1e9 - start_time
         print(f"Duration to align output: {elapsed_time:.2f} s", flush=True)
 
+    del model_a
     gc.collect()
     torch.cuda.empty_cache()
-    del model_a
 
     return result
 
@@ -520,8 +520,8 @@ def diarize(audio, result, debug, huggingface_access_token, min_speakers, max_sp
         elapsed_time = time.time_ns() / 1e9 - start_time
         print(f"Duration to diarize segments: {elapsed_time:.2f} s", flush=True)
 
+    del diarize_model
     gc.collect()
     torch.cuda.empty_cache()
-    del diarize_model
 
     return result
