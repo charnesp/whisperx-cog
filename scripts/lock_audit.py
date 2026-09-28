@@ -159,10 +159,12 @@ def check_against_lock(
     lock = load_lock_v2(lock_path)
     for model in lock["models"]:
         repo = model["repo"]
-        if local_trees and repo in local_trees:
-            local = {f["path"]: f for f in local_trees[repo]}
-        else:
-            local = {f["path"]: f for f in fetch_tree(repo, model["revision"])}
+        local = {
+            f["path"]: f
+            for f in (local_trees[repo] if local_trees and repo in local_trees
+                      else fetch_tree(repo, model["revision"]))
+            if f["path"] not in EXCLUDED
+        }
         locked = {f["path"]: f for f in model["files"]}
         problems = []
         for path, spec in locked.items():
