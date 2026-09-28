@@ -1,0 +1,69 @@
+# Provisioner image CI (T4b, plan E5 §2.2): build/push ghcr.io/charnesp/whisperx-provisioner
+# Déclenché par modification de scripts/provision.py (et workflow_dispatch).
+# Tags: sha-<short8> immuable + feat-qwen3-asr-backend sur la branche; :latest UNIQUEMENT main.
+
+name: Build and push provisioner image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "feat/**"
+    paths:
+      - "scripts/provision.py"
+      - "models_registry.py"
+      - "Dockerfile.provisioner"
+      - "models.lock"
+      - ".github/workflows/provisioner-docker-publish.yml"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/charnesp/whisperx-provisioner
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute tags
+        # Calcul des tags délégué à scripts/compute_image_tags.sh (testable
+        # unitairement, revue T7+T4b): garde :latest en égalité exacte
+        # refs/heads/main / refs/heads/master — jamais de prefix-match.
+        run: |
+          eval "$(IMAGE="ghcr.io/charnesp/whisperx-provisioner" bash scripts/compute_image_tags.sh)"
+          # Persister les variables aux steps suivants (eval ne survit pas au step)
+          printf 'IMAGE=%s\nIS_DEFAULT_BRANCH=%s\nSHORT_SHA=%s\n' \
+            "$IMAGE" "$IS_DEFAULT_BRANCH" "$SHORT_SHA" >> "$GITHUB_ENV"
+          # TAGS doit être NEWLINE-SEPARATED: docker/build-push-action@v6
+          # `tags:` splitte sur les newlines — une chaîne à espaces arrive
+          # côté buildx comme UN SEUL tag invalide ('invalid tag "… canary …"').
+          # Format heredoc GITHUB_ENV (multi-ligne légal):
+          printf 'TAGS<<EOF\n%s\nEOF\n' "${TAGS// /$'\n'}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push provisioner image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.provisioner
+          push: true
+          tags: ${{ env.TAGS }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
