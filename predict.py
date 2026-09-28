@@ -3,6 +3,8 @@ from typing import Any, Optional
 
 import gc
 import importlib
+import logging
+import math
 import os
 import shutil
 import warnings
@@ -20,7 +22,15 @@ import whisperx
 from whisperx.diarize import DiarizationPipeline
 from json_sanitize import sanitize_error_message, sanitize_for_json
 from hf_token import require_diarization_token
-from model_paths import resolve_vad_source_path, resolve_whisper_model_path
+from model_paths import (
+    resolve_model_dir,
+    resolve_vad_source_path,
+    resolve_whisper_model_path,
+)
+from models_registry import (
+    MODELS,
+    resolve_key as _resolve_model_key,
+)
 import tempfile
 import time
 import torch
@@ -28,6 +38,154 @@ import ffmpeg
 
 compute_type = "float16"  # change to "int8" if low on GPU mem (may reduce accuracy)
 device = "cuda"
+
+# ---------------------------------------------------------------------------
+# Qwen3-ASR backend (qwen3-asr) — helpers and constants (GPU-free, unit-tested)
+# ---------------------------------------------------------------------------
+WHISPER_DEFAULT_BATCH = 64  # faster-whisper path default (pre-change behavior)
+
+QWEN_MODEL_NAME = "qwen3-asr"
+QWEN_DEFAULT_BATCH = 4  # measured OOM at larger batches on the shared 16 GB GPU
+QWEN_MAX_BATCH = 8
+QWEN_CONTEXT_CAP = 2000  # chars; truncation logs carry lengths only, never content
+# Model constants come from the unified registry (E5-CODE-1 T1): single
+# declarative source of truth, no hardcoded paths/repos here.
+_QWEN_MODEL_KEY = _resolve_model_key(QWEN_MODEL_NAME)
+_QWEN_ALIGNER_KEY = "qwen3-forced-aligner-0.6b"
+QWEN_ASR_HF_REPO = MODELS[_QWEN_MODEL_KEY].hf_repo
+QWEN_ALIGNER_HF_REPO = MODELS[_QWEN_ALIGNER_KEY].hf_repo
+# Snapshot dirs come from model_paths.resolve_model_dir (E5-LEGACY-HF):
+# env override → provisioned /models/<key>/<sha40>/ → HF repo id.
+# Non-empty weight files that must exist in each provisioned snapshot
+QWEN_ASR_WEIGHT_FILES = list(MODELS[_QWEN_MODEL_KEY].weight_files)
+QWEN_ALIGNER_WEIGHT_FILES = list(MODELS[_QWEN_ALIGNER_KEY].weight_files)
+
+logger = logging.getLogger(__name__)
+
+
+def _env_flag_enabled(value: str | None) -> bool:
+    """Truthy env values for the ENABLE_QWEN kill-switch (default: enabled)."""
+    if value is None:
+        return True
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def qwen_enabled() -> bool:
+    """ENABLE_QWEN kill-switch — read at request time, default enabled."""
+    return _env_flag_enabled(os.environ.get("ENABLE_QWEN"))
+
+
+def assert_qwen_enabled() -> None:
+    if not qwen_enabled():
+        raise RuntimeError(
+            "The qwen3-asr backend is disabled: set the ENABLE_QWEN environment "
+            "variable to '1' (or 'true') to enable it."
+        )
+
+
+def resolve_qwen_batch_size(batch_size, provided: bool = True) -> int:
+    """Qwen batch resolution: default 4 when absent, explicit values clamped [1, 8].
+
+    0/negative values are corrected to the default (not clamped to 1): a
+    non-positive batch is a client mistake, not an intentional single-threaded
+    run. A clamp logs old/new lengths only (ints, no PII).
+    """
+    if not provided or batch_size is None:
+        return QWEN_DEFAULT_BATCH
+    try:
+        value = int(batch_size)
+    except (TypeError, ValueError):
+        return QWEN_DEFAULT_BATCH
+    if value <= 0:
+        logger.warning(
+            "Qwen batch_size %d invalid (non-positive), using default %d",
+            value,
+            QWEN_DEFAULT_BATCH,
+        )
+        return QWEN_DEFAULT_BATCH
+    clamped = max(1, min(QWEN_MAX_BATCH, value))
+    if clamped != value:
+        logger.warning(
+            "Qwen batch_size clamped: %d -> %d (allowed range 1-%d)",
+            value,
+            clamped,
+            QWEN_MAX_BATCH,
+        )
+    return clamped
+
+
+def format_qwen_context(hotwords) -> tuple[str, bool]:
+    """Assemble the Qwen context string from client hotwords.
+
+    Wraps the hotwords in the meeting-context template validated live
+    (design.md §2): 'Réunion technique chez [ENTREPRISE], [CONTEXTE].
+    Participants : [LISTE PARTICIPANTS]. Termes techniques : [LISTE VOCABULAIRE].'
+
+    Known deviation from design.md §2: the OpenAI multipart contract has no
+    company/participants fields, so [ENTREPRISE]/[CONTEXTE]/[LISTE PARTICIPANTS]
+    cannot be filled. The simplified template keeps only the technical-vocabulary
+    section that hotwords can populate. Documented as a deviation in tasks.md.
+
+    Returns (context, truncated). Empty/absent hotwords -> empty string
+    (neutral for Qwen). Content is never logged, only lengths.
+    """
+    words = hotwords.strip() if isinstance(hotwords, str) else ""
+    if not words:
+        return "", False
+    context = (
+        "Contexte technique de la réunion. "
+        f"Termes, entités et noms propres attendus : {words}."
+    )
+    if len(context) > QWEN_CONTEXT_CAP:
+        truncated = context[:QWEN_CONTEXT_CAP]
+        # Lengths only — hotword content is never logged (client proper nouns).
+        logger.warning(
+            "Qwen context truncated: %d -> %d chars",
+            len(context),
+            len(truncated),
+        )
+        return truncated, True
+    return context, False
+
+
+def build_asr_options(temperature: float, initial_prompt, hotwords) -> dict:
+    """faster-whisper asr_options — whisper path, semantics unchanged."""
+    return {
+        "temperatures": [temperature],
+        "initial_prompt": initial_prompt,
+        "hotwords": hotwords if hotwords and hotwords.strip() else None,
+    }
+
+
+def should_detect_language(whisper_model: str, language) -> bool:
+    """Qwen detects language internally; whisper keeps the recursive detection loop."""
+    if language is not None:
+        return False
+    return whisper_model != QWEN_MODEL_NAME
+
+
+def qwen_effective_language(whisper_model: str, language):
+    """Language passed through as-is on the qwen path (pipeline handles mapping)."""
+    if whisper_model != QWEN_MODEL_NAME:
+        return language
+    if language is None:
+        return None
+    return str(language).strip() or None
+
+
+_QWEN_ALIGNER_LOCAL_PATHS_SENTINEL = ["qwen3-forced-aligner-0.6b"]
+
+
+def resolve_qwen_snapshot_dir(candidates=None) -> str:
+    """Back-compat shim: registry resolution with legacy HF fallback
+    (E5-LEGACY-HF).
+
+    Delegates to model_paths.resolve_model_dir (env override →
+    provisioned /models/<key>/<sha40>/ → HF repo id). The `candidates`
+    argument is ignored: the registry is the single source of truth.
+    """
+    key = _QWEN_ALIGNER_KEY if candidates else _QWEN_MODEL_KEY
+    return resolve_model_dir(key)
 
 
 def _resolve_input_default(val: Any) -> Any:
@@ -64,9 +222,9 @@ class Predictor(BasePredictor):
         self,
         audio_file: Path = Input(description="Audio file"),
         whisper_model: str = Input(
-            description="Whisper ASR model: tiny (smallest), large-v3 (higher accuracy), or large-v3-turbo (faster, less VRAM)",
+            description="Whisper ASR model: tiny (smallest), large-v3 (higher accuracy), large-v3-turbo (faster, less VRAM), or qwen3-asr (Qwen3-ASR-1.7B: best proper-noun accuracy with hotwords/context, requires ENABLE_QWEN)",
             default="large-v3-turbo",
-            choices=["tiny", "large-v3", "large-v3-turbo"],
+            choices=["tiny", "large-v3", "large-v3-turbo", "qwen3-asr"],
         ),
         language: str | None = Input(
             description="ISO code of the language spoken in the audio, omit or null to perform language detection",
@@ -91,8 +249,9 @@ class Predictor(BasePredictor):
             description="Hotwords/hint phrases to the model (e.g. \"WhisperX, PyAnnote, GPU\"); improves recognition of rare/technical terms",
             default=None,
         ),
-        batch_size: int = Input(
-            description="Parallelization of input audio transcription", default=64
+        batch_size: int | None = Input(
+            description="Parallelization of input audio transcription. Optional: when omitted, the per-model default applies (64 for faster-whisper, 4 for qwen3-asr; qwen values are clamped to 1-8)",
+            default=None,
         ),
         temperature: float = Input(
             description="Temperature to use for sampling", default=0
@@ -187,20 +346,34 @@ class Predictor(BasePredictor):
             max_speakers = _resolve_input_default(max_speakers)
             debug = _resolve_input_default(debug)
 
-            whisper_arch = resolve_whisper_model_path(whisper_model)
-            asr_options = {
-                "temperatures": [temperature],
-                "initial_prompt": initial_prompt,
-                "hotwords": hotwords if hotwords and hotwords.strip() else None,
-            }
+            is_qwen = whisper_model == QWEN_MODEL_NAME
 
+            if is_qwen:
+                assert_qwen_enabled()
+
+            # Whisper-only resolution: resolve_whisper_model_path knows the
+            # faster-whisper keys only (ENV_OVERRIDES / WHISPER_MODEL_HF_IDS),
+            # so calling it on the qwen path raised KeyError 'qwen3-asr-1.7b'
+            # (prod canary). The qwen branch below resolves its own baked
+            # snapshot via resolve_qwen_snapshot_dir. The detect_language loop
+            # (whisper_arch consumer) is unreachable on qwen:
+            # should_detect_language returns False for whisper_model=qwen3-asr.
+            whisper_arch = None
+            if not is_qwen:
+                whisper_arch = resolve_whisper_model_path(whisper_model)
+
+            asr_options = build_asr_options(
+                temperature=temperature,
+                initial_prompt=initial_prompt,
+                hotwords=hotwords,
+            )
 
             vad_options = {"vad_onset": vad_onset, "vad_offset": vad_offset}
 
             audio_duration = get_audio_duration(audio_file)
 
             if (
-                language is None
+                should_detect_language(whisper_model, language)
                 and language_detection_min_prob > 0
                 and audio_duration > 30000
             ):
@@ -245,14 +418,31 @@ class Predictor(BasePredictor):
 
             start_time = time.time_ns() / 1e9
 
-            model = whisperx.load_model(
-                whisper_arch,
-                device,
-                compute_type=compute_type,
-                language=language,
-                asr_options=asr_options,
-                vad_options=vad_options,
-            )
+            if is_qwen:
+                # Qwen3-ASR path: provisioned snapshot + explicit fp16 dtype
+                # (default fp32 measures ~10 GB VRAM vs ~5 GB fp16). The
+                # snapshot dir resolves from /models when provisioned, else
+                # the HF repo id (runtime download, legacy behavior).
+                qwen_snapshot_dir = resolve_qwen_snapshot_dir()
+                print(f"Qwen ASR source: {qwen_snapshot_dir}", flush=True)
+                asr_qwen_module = importlib.import_module("whisperx.asr_qwen")
+                language = qwen_effective_language(whisper_model, language)
+                model = asr_qwen_module.load_model(
+                    qwen_snapshot_dir,
+                    device,
+                    language=language,
+                    vad_options=vad_options,
+                    qwen_dtype="float16",
+                )
+            else:
+                model = whisperx.load_model(
+                    whisper_arch,
+                    device,
+                    compute_type=compute_type,
+                    language=language,
+                    asr_options=asr_options,
+                    vad_options=vad_options,
+                )
 
             if debug:
                 elapsed_time = time.time_ns() / 1e9 - start_time
@@ -268,7 +458,25 @@ class Predictor(BasePredictor):
 
             start_time = time.time_ns() / 1e9
 
-            result = model.transcribe(audio, batch_size=batch_size)
+            if is_qwen:
+                context, _truncated = format_qwen_context(hotwords)
+                effective_batch = resolve_qwen_batch_size(batch_size, provided=batch_size is not None)
+                result = model.transcribe(
+                    audio,
+                    batch_size=effective_batch,
+                    context=context,
+                )
+            else:
+                # Whisper path: batch_size None must resolve to the historical
+                # faster-whisper default 64. The E3 bridge change (batch_size
+                # only when provided) exposed the fork's `batch_size or
+                # self._batch_size` fallback where None falls through to the
+                # transformers pipeline default (effective batch 1) — pass 64
+                # explicitly to keep the pre-change behavior.
+                effective_whisper_batch = (
+                    WHISPER_DEFAULT_BATCH if batch_size is None else batch_size
+                )
+                result = model.transcribe(audio, batch_size=effective_whisper_batch)
             detected_language = result["language"]
 
             if debug:
@@ -280,17 +488,20 @@ class Predictor(BasePredictor):
             torch.cuda.empty_cache()
 
             if align_output:
-                alignment_module = importlib.import_module("whisperx.alignment")
-                if (
-                    detected_language in alignment_module.DEFAULT_ALIGN_MODELS_TORCH
-                    or detected_language in alignment_module.DEFAULT_ALIGN_MODELS_HF
-                ):
-                    result = align(audio, result, debug)
+                if is_qwen:
+                    result = align_qwen(audio, result, debug)
                 else:
-                    print(
-                        f"Cannot align output as language {detected_language} is not supported for alignment",
-                        flush=True,
-                    )
+                    alignment_module = importlib.import_module("whisperx.alignment")
+                    if (
+                        detected_language in alignment_module.DEFAULT_ALIGN_MODELS_TORCH
+                        or detected_language in alignment_module.DEFAULT_ALIGN_MODELS_HF
+                    ):
+                        result = align(audio, result, debug)
+                    else:
+                        print(
+                            f"Cannot align output as language {detected_language} is not supported for alignment",
+                            flush=True,
+                        )
 
             if diarization:
                 hf_token = require_diarization_token(diarization, huggingface_access_token)
@@ -481,6 +692,42 @@ def align(audio, result, debug):
         language_code=result["language"], device=device
     )
     result = whisperx.align(
+        result["segments"],
+        model_a,
+        metadata,
+        audio,
+        device,
+        return_char_alignments=False,
+    )
+
+    if debug:
+        elapsed_time = time.time_ns() / 1e9 - start_time
+        print(f"Duration to align output: {elapsed_time:.2f} s", flush=True)
+
+    del model_a
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return result
+
+
+def align_qwen(audio, result, debug):
+    """Word-level alignment on the qwen path: Qwen3-ForcedAligner-0.6B from the
+    baked /models snapshot (wav2vec2 is incompatible with qwen outputs)."""
+    start_time = time.time_ns() / 1e9
+
+    aligner_snapshot_dir = resolve_qwen_snapshot_dir(_QWEN_ALIGNER_LOCAL_PATHS_SENTINEL)
+    print(f"Qwen forced aligner snapshot: {aligner_snapshot_dir}", flush=True)
+
+    alignment_qwen_module = importlib.import_module("whisperx.alignment_qwen")
+    model_a, metadata = alignment_qwen_module.load_align_model(
+        language_code=result["language"],
+        device=device,
+        model_name=aligner_snapshot_dir,
+        model_cache_only=True,
+        qwen_dtype="float16",
+    )
+    result = alignment_qwen_module.align(
         result["segments"],
         model_a,
         metadata,

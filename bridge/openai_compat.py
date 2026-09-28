@@ -22,13 +22,24 @@ OPENAI_STT_TIMEOUT_SECONDS = int(os.environ.get("OPENAI_STT_TIMEOUT_SECONDS", "3
 OPENAI_STT_MAX_FILE_SIZE_MB = int(os.environ.get("OPENAI_STT_MAX_FILE_SIZE_MB", "25"))
 OPENAI_STT_MAX_FILE_SIZE_BYTES = OPENAI_STT_MAX_FILE_SIZE_MB * 1024 * 1024
 
+# Bridge default model (Charles decision, option 2): an ENV variable, not
+# hard-coded code. The OpenAI "whisper-1" alias routes to this model, so
+# production can switch the default backend (e.g. qwen3-asr) via env without
+# a code change. Unset keeps the original behavior (large-v3-turbo).
+BRIDGE_DEFAULT_MODEL = os.environ.get("BRIDGE_DEFAULT_MODEL", "large-v3-turbo")
+
 MODEL_MAP = {
-    "whisper-1": "large-v3-turbo",
     "gpt-4o-transcribe-diarize": "large-v3-turbo",
     "large-v3": "large-v3",
     "large-v3-turbo": "large-v3-turbo",
     "tiny": "tiny",
+    "qwen3-asr": "qwen3-asr",
 }
+
+# Cog whisper_model values that route client hotwords to the Qwen context
+# system message (other models keep faster-whisper hotwords semantics, and the
+# bridge still sends hotwords: None for them — whisper path unchanged).
+QWEN_MODELS = frozenset({"qwen3-asr"})
 
 DIARIZE_MODEL = "gpt-4o-transcribe-diarize"
 DIARIZE_ALLOWED_RESPONSE_FORMATS = frozenset({"json", "text", "diarized_json"})
@@ -384,16 +395,60 @@ def validate_transcription_request(
     model = _field_value(fs, "model")
     if not model:
         return None, openai_error("model is required", "invalid_request_error", 400)
-    if model not in MODEL_MAP:
+    # The whisper-1 alias is NOT in MODEL_MAP: it resolves dynamically to
+    # BRIDGE_DEFAULT_MODEL (env), so the guard accepts the alias itself plus
+    # the resolved default value. Any other model must be in MODEL_MAP.
+    if model == "whisper-1":
+        whisper_model = os.environ.get("BRIDGE_DEFAULT_MODEL") or BRIDGE_DEFAULT_MODEL
+    elif model in MODEL_MAP:
+        whisper_model = MODEL_MAP[model]
+    elif model == BRIDGE_DEFAULT_MODEL:
+        whisper_model = model
+    else:
         return None, openai_error(
             f"model '{model}' not supported",
             "invalid_request_error",
             400,
         )
 
+    # ENABLE_QWEN kill-switch, read at request time (no redeploy to toggle).
+    # Gate at the bridge so a disabled backend returns a clean 400 instead of
+    # a Cog-side 500; predict.py keeps its own gate as defense in depth.
+    # Same semantics as predict.qwen_enabled(): unset defaults to ENABLED,
+    # only explicit falsy values (0/false/empty/…) disable the backend.
+    # Gated on the RESOLVED model: model=qwen3-asr directly AND the whisper-1
+    # alias resolving to qwen3-asr via BRIDGE_DEFAULT_MODEL are both covered.
+    if whisper_model in QWEN_MODELS:
+        enable_qwen = os.environ.get("ENABLE_QWEN")
+        if enable_qwen is not None and enable_qwen.strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return None, openai_error(
+                "qwen3-asr backend is disabled (ENABLE_QWEN)",
+                "invalid_request_error",
+                400,
+            )
+
     temperature, temp_err = _parse_temperature(_field_value(fs, "temperature"))
     if temp_err:
         return None, temp_err
+
+    # batch_size is forwarded only when the client provides it (no hard-coded
+    # default: the per-model predictor default applies, 4 for qwen3-asr).
+    raw_batch_size = _field_value(fs, "batch_size")
+    batch_size: Optional[int] = None
+    if raw_batch_size not in (None, ""):
+        try:
+            batch_size = int(raw_batch_size)
+        except (TypeError, ValueError):
+            return None, openai_error(
+                f"batch_size must be an integer, got '{raw_batch_size}'",
+                "invalid_request_error",
+                400,
+            )
 
     response_format = _field_value(fs, "response_format", "json") or "json"
     allowed_formats = {"json", "text", "verbose_json", "srt", "vtt", "diarized_json"}
@@ -406,6 +461,7 @@ def validate_transcription_request(
 
     language = _field_value(fs, "language")
     prompt = _field_value(fs, "prompt")
+    hotwords = _field_value(fs, "hotwords")
     timestamp_granularities = _parse_timestamp_granularities(fs)
     known_speaker_names = _parse_known_speaker_names(fs)
 
@@ -426,9 +482,11 @@ def validate_transcription_request(
         "file_bytes": file_bytes,
         "extension": extension,
         "model": model,
-        "whisper_model": MODEL_MAP[model],
+        "whisper_model": whisper_model,
         "language": language,
         "prompt": prompt,
+        "hotwords": hotwords,
+        "batch_size": batch_size,
         "temperature": temperature,
         "response_format": response_format,
         "timestamp_granularities": timestamp_granularities,
@@ -448,6 +506,7 @@ def build_audio_data_uri(file_bytes: bytes, extension: str) -> str:
 def build_cog_input(parsed: Dict[str, Any]) -> Dict[str, Any]:
     data_uri = build_audio_data_uri(parsed["file_bytes"], parsed["extension"])
     is_diarize = parsed.get("is_diarize", False)
+    is_qwen = parsed.get("whisper_model") in QWEN_MODELS
     cog_input: Dict[str, Any] = {
         "audio_file": data_uri,
         "whisper_model": parsed["whisper_model"],
@@ -455,17 +514,23 @@ def build_cog_input(parsed: Dict[str, Any]) -> Dict[str, Any]:
         "temperature": parsed["temperature"],
         "align_output": True,
         "diarization": is_diarize,
-        "batch_size": 64,
         "vad_onset": 0.500,
         "vad_offset": 0.363,
         "language_detection_min_prob": 0,
         "language_detection_max_tries": 5,
-        "hotwords": None,
+        # hotwords only leave the bridge on the qwen path (Qwen context system
+        # message); whisper path keeps hotwords: None (semantics unchanged).
+        # Hotword content is never logged (client proper nouns).
+        "hotwords": parsed.get("hotwords") if is_qwen else None,
         "huggingface_access_token": None,
         "min_speakers": None,
         "max_speakers": None,
         "debug": False,
     }
+    # batch_size is included only when the client provides it: the Cog
+    # predictor applies the per-model default (64 whisper / 4 qwen clamped 8).
+    if parsed.get("batch_size") is not None:
+        cog_input["batch_size"] = parsed["batch_size"]
     if not is_diarize:
         cog_input["initial_prompt"] = parsed["prompt"]
     return cog_input

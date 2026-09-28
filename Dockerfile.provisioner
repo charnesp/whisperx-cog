@@ -1,0 +1,21 @@
+# Provisioner image (plan E5 §2.2): GPU-free, python-slim + huggingface_hub pinné.
+# Usage (traitement-1):
+#   docker run --rm -v /files/data/whisperx-cog/models:/models \
+#     ghcr.io/charnesp/whisperx-provisioner:<sha> provision --model <key>
+FROM python:3.12-slim
+
+# Deps pinnées (PEP 723 inline du script, hors cache uv en container)
+RUN pip install --no-cache-dir "pyyaml>=6.0,<7" "huggingface_hub>=0.24,<1"
+
+WORKDIR /app
+
+# Source of truth + code provisionneur
+COPY models.lock /app/models.lock
+COPY models_registry.py /app/models_registry.py
+COPY scripts/provision.py /app/provision.py
+
+# Le lock embarqué vit à côté du code: /app = root du provisionneur
+ENV PROVISION_APP_ROOT=/app PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python", "/app/provision.py"]
+CMD ["--help"]
