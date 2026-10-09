@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import struct
 import urllib.error
 import urllib.request
@@ -47,6 +48,10 @@ DEFAULT_SYSTEM_PROMPT = (
 LANGUAGE_INSTRUCTION = "Reply in the language whose ISO code is %r."  # %s: caller ISO code
 CONTEXT_INSTRUCTION = "Terms and names expected: %s."  # hotwords (B6 language prefix)
 _ASR_PREFIX = "<asr_text>"
+# Server reply prefix grammar: lowercase `language <token>` (e.g. `language French`).
+# Lowercase on purpose: a normal sentence starting with the capitalised word
+# "Language" is structured output, not the model's prefix.
+_LANGUAGE_PREFIX = re.compile(r"^language\s+([A-Za-z][A-Za-z0-9_-]*)")
 HTTP_STATUS_OK = 200
 _ERROR_BODY_SNIPPET_BYTES = 96  # truncate upstream bodies in error messages
 
@@ -273,6 +278,11 @@ def parse_asr_content(content, finish_reason=None) -> str:
         )
     index = text.find(_ASR_PREFIX)
     if index < 0:
+        if _LANGUAGE_PREFIX.match(text.lstrip()):
+            raise RemoteResponseParserError(
+                "reply carries a server 'language X' prefix but no "
+                f"{_ASR_PREFIX} marker: unparseable ASR reply"
+            )
         return text.strip()  # structured output path: content is the text
     after = text[index + len(_ASR_PREFIX):].strip()
     return after  # language None / silence -> "" (valid empty segment)
