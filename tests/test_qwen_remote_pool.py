@@ -27,6 +27,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (for _predict_stub)
 
 import qwen_remote_client  # noqa: E402
 from qwen_remote_client import (  # noqa: E402
@@ -184,7 +185,9 @@ class TestPoolOrderAndCompletion(unittest.TestCase):
         self.assertEqual(result_langs, ["fr", "en"])
 
     def test_three_windows_pool_two_all_transcribed_vad_order(self):
-        # window texts flow back in REVERSE completion order (w0 slowest)
+        # static serving double: proves VAD order is preserved by the
+        # input-index bookkeeping (reverse-completion ordering is exercised
+        # separately by test_reverse_completion_still_vad_order below)
         texts = ["debut", "milieu", "fin"]
         calls = []
 
@@ -375,10 +378,12 @@ class TestFailureSemantics(unittest.TestCase):
             return 200, json.dumps(envelope)
 
         with mock.patch.object(qwen_remote_client, "perform_http_post", side_effect=fake_post):
-            with self.assertRaises(QwenRemoteError):
+            with self.assertRaises(QwenRemoteError) as caught:
                 transcribe_windows(windows, CONFIG, batch_size=3)
-        # the failing call raised inside the orchestrator: NO fused list returned
-        # (assertNothingReturned is structural: the exception replaces the result)
+        # the failing window raised inside the orchestrator: the typed error
+        # REPLACES any return, so no partially-fused list can escape
+        self.assertEqual(caught.exception.category, "http_status")
+        self.assertIn("503", str(caught.exception))
 
     def test_zero_retries_5xx_immediate_typed_failure(self):
         texts = ["never-comes", "never-comes-2"]
@@ -395,23 +400,38 @@ class TestFailureSemantics(unittest.TestCase):
         self.assertEqual(len(attempts), 1)  # ONE attempt, no second call, no retry
 
     def test_no_fallback_to_local_engine_on_failure(self):
+        """A failed remote window must NOT fall back to any local engine.
+
+        Replaced (review finding P1-D): the previous version asserted on
+        `local_calls`, a list nothing ever appended to, so the assertion
+        could never fail. This version installs and patches the REAL local
+        seams — the qwen ASR loader (`whisperx.asr_qwen.load_model`, the same
+        object predict.py uses) and the in-process whisper loader — drives a
+        remote window failure and proves neither is invoked. A regression that
+        wired a local fallback into the remote path would trip it.
+        """
+        from _predict_stub import install
+
+        install()
+        local_loader = mock.Mock(side_effect=AssertionError("local ASR fallback"))
+        whisper_loader = mock.Mock(side_effect=AssertionError("whisper fallback"))
         texts = ["x", "y"]
         windows = [f"data:audio/wav;base64,{t}" for t in texts]
-        local_calls = []
-
         attempts = []
 
         def failing_window(url, payload, headers, timeout=None):
             attempts.append(url)
             raise RemoteHTTPStatusError(503, "down")
 
-        # The seam the orchestrator calls is transcribe_window; patching it
-        # lets us observe the fallback candidate call site directly.
-        with mock.patch.object(qwen_remote_client, "perform_http_post", side_effect=failing_window):
+        asr_qwen = sys.modules["whisperx.asr_qwen"]
+        with mock.patch.object(asr_qwen, "load_model", local_loader), \
+                mock.patch.object(sys.modules["whisperx"], "load_model", whisper_loader), \
+                mock.patch.object(qwen_remote_client, "perform_http_post", side_effect=failing_window):
             with self.assertRaises(QwenRemoteError):
                 transcribe_windows(windows, CONFIG, batch_size=1)
-        self.assertEqual(local_calls, [])
-        self.assertEqual(len(attempts), 1)  # failed once, never retried/fallback
+        local_loader.assert_not_called()
+        whisper_loader.assert_not_called()
+        self.assertEqual(len(attempts), 1)  # ONE attempt: no retry, no fallback
 
 
 if __name__ == "__main__":

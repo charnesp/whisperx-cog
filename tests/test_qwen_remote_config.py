@@ -104,7 +104,10 @@ class TestRemoteFailFast(unittest.TestCase):
         ):
             with self.assertRaises(QwenRemoteError) as ctx:
                 resolve_remote_config()
-        self.assertIn("http", str(ctx.exception))
+        self.assertIn(
+            "QWEN_REMOTE_BASE_URL must use the http or https scheme",
+            str(ctx.exception),
+        )
 
 
 class TestUrlNormalization(unittest.TestCase):
