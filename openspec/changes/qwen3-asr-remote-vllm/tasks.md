@@ -1,7 +1,7 @@
 ## 1. Repo leak gate (FIRST — protects every other group)
 
-- [ ] 1.1 RED: gate script + test — exhaustive regex scan of the worktree (code, tests, docs, compose, k8s, openspec) finding NO personal IP/port; RFC 2606 hosts (`*.invalid`, `example.test`) required in test fixtures; whitelist exactly `127.0.0.1`, `0.0.0.0`, `localhost`; real RED: gate FAILS if a fixture accidentally carries a concrete host (sabotage-proof: remove a host, the gate must fail)
-- [ ] 1.2 GREEN: wire the gate into `Makefile.harness` check/ci; `make -f Makefile.harness check` green
+- [x] 1.1 RED: gate script + test — exhaustive regex scan of the worktree (code, tests, docs, compose, k8s, openspec) finding NO personal IP/port; RFC 2606 hosts (`*.invalid`, `example.test`) required in test fixtures; whitelist exactly `127.0.0.1`, `0.0.0.0`, `localhost`; real RED: gate FAILS if a fixture accidentally carries a concrete host (sabotage-proof: remove a host, the gate must fail)
+- [x] 1.2 GREEN: wire the gate into `Makefile.harness` check/ci; `make -f Makefile.harness check` green
 
 ## 2. Env resolution + remote config (GPU-free, fail-fast at setup)
 
