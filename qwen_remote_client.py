@@ -325,7 +325,8 @@ def parse_asr_content(content, finish_reason=None) -> str:
         )
     index = text.find(_ASR_PREFIX)
     if index < 0:
-        if _LANGUAGE_PREFIX.match(text.lstrip()):
+        match = _LANGUAGE_PREFIX.match(text.lstrip())
+        if match and _looks_like_server_language(match.group(1)):
             raise RemoteResponseParserError(
                 "reply carries a server 'language X' prefix but no "
                 f"{_ASR_PREFIX} marker: unparseable ASR reply"
@@ -333,6 +334,20 @@ def parse_asr_content(content, finish_reason=None) -> str:
         return text.strip()  # structured output path: content is the text
     after = text[index + len(_ASR_PREFIX):].strip()
     return after  # language None / silence -> "" (valid empty segment)
+
+
+def _looks_like_server_language(token) -> bool:
+    """True when a `language X` head really is the Qwen3-ASR reply prefix.
+
+    `language French` / `language None` are server prefixes; structured output
+    that merely starts with the word 'language' (e.g. 'language models are
+    useful') is not and must be kept as-is. Unknown tokens are therefore NOT
+    treated as the prefix (narrow rejection, no over-refusal).
+    """
+    head = str(token).strip().lower()
+    if head == "none":
+        return True
+    return normalize_language_code(token) is not None
 
 
 def normalize_language_code(token):

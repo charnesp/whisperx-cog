@@ -70,7 +70,7 @@ kubectl logs <pod> -c whisperx | grep 'qwen-remote:'
 `QWEN_BACKEND` is resolved **once at boot** (`Predictor.setup()` caches the config in `predict.py`), **not** per request — flipping it **requires a container restart** (`docker compose up -d --force-recreate whisperx` or `kubectl rollout restart deployment/whisperx-stack`). Reverting is the same operation with `QWEN_BACKEND=local`.
 
 - **Fail-fast blast radius:** a broken REMOTE config (missing `QWEN_REMOTE_BASE_URL` / `QWEN_REMOTE_MODEL`, non-http(s) scheme) makes `setup()` raise, so the **whole whisperx container fails to start** — the faster-whisper models are down too. Validate both remote vars before flipping the backend.
-- **Timeout sizing:** `QWEN_REMOTE_TIMEOUT_S` (cog, per request, default 300) **must be strictly lower than** the bridge's `OPENAI_STT_TIMEOUT_SECONDS` (default 300) — otherwise the bridge 504 fires before cog's typed `QwenRemoteError:` can surface.
+- **Timeout sizing:** keep `QWEN_REMOTE_TIMEOUT_S` (cog) **below** the bridge's `OPENAI_STT_TIMEOUT_SECONDS` — otherwise the bridge 504 fires before cog's typed `QwenRemoteError:` can surface. Both default to 300, i.e. equal by default: plan headroom (e.g. 240 vs 300) before relying on the typed error.
 - **Timeout semantics:** `QWEN_REMOTE_TIMEOUT_S` is a **per-operation socket timeout** (applied to connect, then read), not a wall-clock bound on a whole transcription: a slow multi-window batch may exceed it in total. A cold model wake \(tens of seconds\) is one idle gap absorbed by the per-request value.
 
 Diagnose by `QwenRemoteError:` category:
