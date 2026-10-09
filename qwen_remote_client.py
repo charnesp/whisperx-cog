@@ -44,7 +44,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "Transcribe the input audio exactly as spoken; reply with the "
     "transcription text only."
 )
-LANGUAGE_INSTRUCTION = "Reply in French (ISO code 'fr')."
+LANGUAGE_INSTRUCTION = "Reply in the language whose ISO code is %r."  # %s: caller ISO code
 CONTEXT_INSTRUCTION = "Terms and names expected: %s."  # hotwords (B6 language prefix)
 _ASR_PREFIX = "<asr_text>"
 HTTP_STATUS_OK = 200
@@ -164,7 +164,7 @@ def _audio_url(window) -> str:
 def _system_message(language=None, context=None) -> str:
     parts = [DEFAULT_SYSTEM_PROMPT]
     if language:
-        parts.append(LANGUAGE_INSTRUCTION.replace("'fr'", repr(str(language))))
+        parts.append(LANGUAGE_INSTRUCTION % str(language))
     if context:
         parts.append(CONTEXT_INSTRUCTION % context)
     return " ".join(parts)
