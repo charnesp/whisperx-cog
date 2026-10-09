@@ -4,8 +4,8 @@ The `qwen3-asr` backend in cog loads ~5 GB VRAM per run (full model load/unload 
 
 ## What Changes
 
-- New remote mode for the qwen3-asr backend: transcription windows are delegated over HTTP to the vLLM server behind the model gateway (base URL provided by env), the local path remains fully available (complete backward compatibility)
-- The remote base URL is configurable ONLY via environment (`QWEN_REMOTE_BASE_URL`): no address or port hard-coded anywhere in the repository (code, tests, docs, compose, k8s); unset URL + remote backend = explicit configuration error at first call
+- New remote mode for the qwen3-asr backend: transcription windows are delegated over HTTP to the vLLM server behind the model gateway (base URL and model name provided by env), the local path remains fully available (complete backward compatibility)
+- The remote base URL (`QWEN_REMOTE_BASE_URL`) and model name (`QWEN_REMOTE_MODEL`) are configurable ONLY via environment: no address, port or model name hard-coded anywhere in the repository (code, tests, docs, compose, k8s); remote misconfiguration = fail-fast typed error at predictor boot
 - Backend selector env: `QWEN_BACKEND=remote|local`, default `local` (zero behavioral change at deploy; flippable by env); kill-switch `ENABLE_QWEN` unchanged and effective in both modes
 - Output invariant: segments produced by the remote path carry their timestamps from the LOCAL VAD chunking (start/end untouched); the ForcedAligner alignment and pyannote diarization stages downstream are unchanged
 - Remote failures are explicit typed errors (`qwen_remote_unavailable`, 502) — never a silent fallback to the local engine
@@ -38,7 +38,7 @@ The `qwen3-asr` backend in cog loads ~5 GB VRAM per run (full model load/unload 
 ## Risks
 
 - Response parsing: the multimodal reply carries a `language X<asr_text>...` prefix — parser tested against the real format (spike payload captured) and structured-output cases
-- Cold start: first call after inactivity = the model gateway wake (measured: a cold boot of tens of seconds and a much shorter sleep/wake cycle) — timeout sized accordingly, error message explicit
+- Cold start: first call after inactivity = the model gateway wake (measured: a cold boot of tens of seconds and a much shorter sleep/wake cycle) — per-request timeout default 300 s absorbs it; zero-retry posture documented (a mid-swap 5xx surfaces explicitly)
 - VRAM: the remote engine's footprint is a fraction of the deployment's budget; it is scheduled to share the gateway with the retrieval models and never with the local LLM engine, exclusivity being carried by the gateway
-- Remote unavailable: explicit typed error, no fallback (decided); clients receive 502 with actionable message
+- Remote unavailable: explicit typed `QwenRemoteError:` message (categories config/connection/timeout/http_status/parse), prediction failure at the bridge (502), no fallback and no retry at v1 (decided)
 - Concurrency: VAD windows fly with a bounded pool reusing the clamped batch_size (4 default / 8 cap); VAD order preserved in the fused result
