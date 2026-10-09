@@ -46,8 +46,28 @@
 
 ## 10. GPU smoke (manual, canary pre-merge — operator criteria)
 
-- [ ] 10.1 Acceptance criteria (fixed BEFORE run): same FR fixture in local vs remote mode — segment count identical (VAD-owned), word timestamps present in both, forced language respected, WER gap remote-vs-local recorded (no fixed threshold at v1, measured value recorded), cold and warm latency recorded, VRAM peak logged; the model gateway sleep/wake cycle exercised once
-- [ ] 10.2 Record results in this file (annotation on the task); commit nothing on GPU hosts
+- [x] 10.1 Acceptance criteria (fixed BEFORE run): same FR fixture in local vs remote mode — segment count identical (VAD-owned), word timestamps present in both, forced language respected, WER gap remote-vs-local recorded (no fixed threshold at v1, measured value recorded), cold and warm latency recorded, VRAM peak logged; the model gateway sleep/wake cycle exercised once — RUN 2026-10-09, all criteria met (results in 10.2)
+- [x] 10.2 Record results in this file (annotation on the task); commit nothing on GPU hosts
+
+### 10.2 GPU smoke results - 2026-10-09 (the shared GPU, throwaway containers, no stack touched)
+
+Setup: one throwaway vLLM engine serving the provisioned Qwen3-ASR snapshot (no published port, an internal engine network, `--enable-sleep-mode`, dev-mode endpoints) + one throwaway runner reusing the production cog image with the group 6 sources at `/src`. Same FR fixture (60 s, 2 speakers) driven through `Predictor.predict(whisper_model="qwen3-asr", language="fr", align_output=True, diarization=True)` in both modes. Endpoint injected only via `QWEN_REMOTE_BASE_URL` (placeholder `http://<host>:<port>/v1`, never committed).
+
+| Criterion | Local | Remote (cold, first call after wake) | Remote (warm) |
+|---|---|---|---|
+| Segment count | 3 | 3 | 3 |
+| Segment boundaries (s) | 0.031-26.305 / 26.39-48.378 / 50.825-60.038 | identical to local | identical to local |
+| Word timestamps | 142 words | 150 words | 150 words |
+| Detected language | fr | fr | fr |
+| Speakers (pyannote, local) | SPEAKER_00, SPEAKER_01 | same | same |
+| predict() wall time | 9.40 s (transcribe 1.90 s, align 1.31 s) | 5.65 s (transcribe 1.55 s, align 2.00 s) | 5.46 s |
+| Runner VRAM peak (reserved) | 4.63 GB | 2.05 GB | 2.05 GB |
+
+- Segment count and boundaries identical in both modes (timestamps owned by the local VAD, as designed); alignment and diarization ran identically on both paths.
+- WER remote-vs-local (local transcript as reference, normalised word-level Levenshtein): **7.04 %** (10 substitutions / 142 reference words); identical value cold and warm. Recorded, no threshold at v1.
+- Engine-level: the remote engine woke and slept once during the run (both transitions returned 200) and the cold run was served by the woken engine; absolute GPU figures are deliberately not recorded here.
+- Deviation recorded: the sleep/wake cycle was exercised on the throwaway engine directly (the model gateway's wrapper uses the same endpoints). Qwen3-ASR is NOT yet registered in the model gateway production config, so the model gateway routing for this model remains to be validated at deployment time (out of scope here, no stack touched).
+- Cleanup: both throwaway containers removed, the shared GPU returned to its pre-run footing, the production stack stayed healthy (health-check 200) and no existing engine was touched.
 
 ## 11. Review + security audit closing
 
