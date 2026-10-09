@@ -25,6 +25,7 @@ the module-contract test asserts its absence.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import struct
 import sys
@@ -36,7 +37,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import qwen_remote  # noqa: E402  (sibling module, group 2 — must exist)
+import qwen_remote  # noqa: E402,F401  (sibling module, group 2 — must exist)
 from qwen_remote import QwenRemoteError  # noqa: E402
 
 CONFIG = {
@@ -78,7 +79,15 @@ CHAT_COMPLETION_ENVELOPE = {
 
 def _wav_bytes(samples, sample_rate=16000):
     """Test-side trusted wav builder (independently written from the caller)."""
-    pcm = b"".join(struct.pack("<h", s) for s in samples)
+    converted = []
+    for value in samples:
+        iv = int(round(32767.0 * float(value)))
+        if iv > 32767:
+            iv = 32767
+        elif iv < -32767:
+            iv = -32767
+        converted.append(iv)
+    pcm = b"".join(struct.pack("<h", s) for s in converted)
     data_size = len(pcm)
     body = b"".join(
         (
@@ -105,6 +114,9 @@ class _FakeResponse:
         self._body = body
         self.headers = headers or dict(EXPECTED_HEADERS)
         self._read = False
+        # NOTE: the HTTPError(fp=bytes) doubles carry a raw bytes fp; CPython
+        # wraps it into a temp file lazily and its GC __del__ prints a harmless
+        # "'bytes' object has no attribute 'close'" noise line. Unused here.
 
     def read(self):
         if self._read:
@@ -343,8 +355,9 @@ class TestPerformHttpPostEntrypoint(unittest.TestCase):
     def test_http_error_maps_to_typed_status_error_with_truncated_body(self):
         class BoomOpener:
             def open(self, request, timeout=None):
+                body_io = io.BytesIO(b"vllm busy" * 100)
                 raise urllib.error.HTTPError(
-                    request.full_url, 503, "Service Unavailable", {}, b"vllm busy" * 100
+                    request.full_url, 503, "Service Unavailable", {}, body_io
                 )
 
         with mock.patch("urllib.request.build_opener", return_value=BoomOpener()):
@@ -412,7 +425,9 @@ class TestTranscribeWindowWorkflow(unittest.TestCase):
     def test_non_200_status_raises_typed_status_error(self):
         class BoomOpener:
             def open(self, request, timeout=None):
-                raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, b"mid-swap")
+                raise urllib.error.HTTPError(
+                    request.full_url, 502, "Bad Gateway", {}, io.BytesIO(b"mid-swap")
+                )
 
         with mock.patch("urllib.request.build_opener", return_value=BoomOpener()):
             with self.assertRaises(self.module.RemoteHTTPStatusError) as caught:
