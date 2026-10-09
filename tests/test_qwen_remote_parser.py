@@ -65,6 +65,25 @@ class TestParseAsrContent(unittest.TestCase):
     def test_structured_output_without_prefix_used_as_is(self):
         self.assertEqual(parse_asr_content("Bonjour tu va bien"), "Bonjour tu va bien")
 
+    def test_language_prefix_without_asr_marker_is_typed_parse_error(self):
+        """A `language X` prefix with NO <asr_text> marker must fail explicitly.
+
+        Regression (review finding P1-A): the parser used to return the whole
+        string (prefix included) in that case, leaking `language French` into
+        the segment text.
+        """
+        with self.assertRaises(RemoteResponseParserError) as caught:
+            parse_asr_content("language French hello world")
+        self.assertTrue(str(caught.exception).startswith("QwenRemoteError: parse"))
+
+    def test_capitalised_sentence_is_not_mistaken_for_the_prefix(self):
+        """Structured output starting with the capitalised word "Language" is
+        not the model's lowercase `language X` prefix grammar."""
+        self.assertEqual(
+            parse_asr_content("Language models are useful"),
+            "Language models are useful",
+        )
+
     def test_language_none_marker_yields_empty_segment(self):
         self.assertEqual(parse_asr_content("language None<asr_text>"), "")
 
