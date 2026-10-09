@@ -37,6 +37,27 @@ def _warn_invalid_selector(value):
     )
 
 
+def resolve_batch_size(batch_size, default: int, cap: int) -> int:
+    """Single source of truth for a requested concurrency/batch value.
+
+    Semantics (mirrors predict.resolve_qwen_batch_size exactly): `None` or a
+    non-integer value -> `default`; `<= 0` -> `default`; otherwise clamped to
+    `[1, cap]`. `int()` is applied, so `2.5 -> 2` and `True -> 1`, exactly as
+    the local engine path. Pure (no logging, no GPU import): shared by
+    `predict.resolve_qwen_batch_size` and `qwen_remote_client.clamp_remote_pool_size`
+    so the local clamp and the remote pool bound cannot drift.
+    """
+    if batch_size is None:
+        return default
+    try:
+        value = int(batch_size)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        return default
+    return max(1, min(cap, value))
+
+
 def resolve_remote_config():
     """Resolve the backend + remote settings from env, at call time.
 

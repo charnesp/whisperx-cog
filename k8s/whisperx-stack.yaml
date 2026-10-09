@@ -53,8 +53,10 @@ spec:
                 key: HUGGINGFACE_TOKEN
           # Remote qwen3-asr backend. Address and model are injected at deploy
           # time (empty here): no host, port or model name is committed.
+          # QWEN_BACKEND is a deploy-time placeholder too: empty resolves to the
+          # code default 'local' (same contract as compose ${QWEN_BACKEND:-local}).
           - name: QWEN_BACKEND
-            value: "local"
+            value: ""
           - name: QWEN_REMOTE_BASE_URL
             value: ""
           - name: QWEN_REMOTE_MODEL

@@ -30,6 +30,12 @@ from pathlib import Path
 WHITELIST_V4 = {"127.0.0.1", "0.0.0.0"}
 WHITELIST_NAMES = {"localhost"}
 
+# Internal compose/k8s service labels (generic, committed in docker-compose.yml
+# and the k8s manifest): not personal addresses, so their `name:port` form never
+# flags. The REMOTE engine label is deliberately NOT here, so a leaked
+# single-label `service:port` address is still caught.
+SERVICE_NAME_TOKENS = {"cog", "bridge", "redis", "whisperx", "qwen"}
+
 # RFC 2606 reserved names: mandated fixture placeholders, never flagged.
 RFC2606_SUFFIXES = (".invalid", ".test", ".example", ".localhost")
 RFC2606_NAMES_EXACT = {"example.com", "example.net", "example.org"}
@@ -50,6 +56,13 @@ _DOTTED_HOSTPORT = re.compile(
     r"(?<![\w.:/])(?P<host>[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*)+):"
     r"(?P<port>\d{1,5})(?![\w.])"
 )
+# Single-label host (no dot) with a port, e.g. a bare compose service name and
+# port: still an address leak. The host must START with a letter, so a bare
+# time (`12:30`) or an IP octet never matches; whitelisted/RFC 2606 names and
+# the internal service labels are exempt.
+_BARE_HOSTPORT = re.compile(
+    r"(?<![\w.:/-])(?P<host>[A-Za-z][A-Za-z0-9-]*):(?P<port>\d{1,5})(?![\w.])"
+)
 
 _SKIP_DIRS = {
     ".git", ".venv", "__pycache__", ".ruff_cache", "node_modules",
@@ -57,7 +70,7 @@ _SKIP_DIRS = {
 }
 _TEXT_SUFFIXES = {
     ".py", ".md", ".txt", ".yml", ".yaml", ".json", ".toml", ".cfg",
-    ".ini", ".sh", ".html", ".css", ".js", ".provision",
+    ".ini", ".sh", ".html", ".css", ".js", ".provision", ".example",
 }
 _TEXT_FILES = {
     "Dockerfile", "Makefile", "Makefile.harness", "cog.yaml", ".gitignore",
@@ -80,6 +93,9 @@ def _host_ok(host: str) -> bool:
     if h in WHITELIST_V4 or h in WHITELIST_NAMES:
         return True
     if h in RFC2606_NAMES_EXACT or h.endswith(RFC2606_SUFFIXES):
+        return True
+    # Internal service labels (generic compose/k8s names).
+    if h in SERVICE_NAME_TOKENS:
         return True
     # Documented placeholder tokens: the neutral doc placeholders mandated
     # by the spec (exact tokens, not substrings).
@@ -108,6 +124,7 @@ def scan(root: Path) -> list[tuple[str, int, str, str]]:
             for pattern, label in (
                 (_URL_HOSTPORT, "address in URL (host:port)"),
                 (_DOTTED_HOSTPORT, "dotted host with port"),
+                (_BARE_HOSTPORT, "bare host with port"),
             ):
                 for m in pattern.finditer(line):
                     if _host_ok(m.group("host")):

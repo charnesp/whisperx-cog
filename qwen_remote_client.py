@@ -41,8 +41,6 @@ logger = logging.getLogger("qwen_remote")
 
 # --- request constants (B1/B6: pinned request identity) --------------------
 REMOTE_META_MAX_TOKENS = 120  # bounded, NOT configurable: window <= 30 s ASR text
-REMOTE_TRANSCRIBE_TIMEOUT = 8  # unused timeout fallback; real timeout comes from config
-REMOTE_SUFFIX = "/chat/completions"
 DEFAULT_SYSTEM_PROMPT = (
     "Transcribe the input audio exactly as spoken; reply with the "
     "transcription text only."
@@ -88,21 +86,12 @@ _LANGUAGE_NAME_TO_ISO = {
 HTTP_STATUS_OK = 200
 _ERROR_BODY_SNIPPET_BYTES = 96  # truncate upstream bodies in error messages
 
-BANDIT_B310_NOCOSE = "# nosec B106/B310 — internal URL: scheme enforced upstream"
 
-
-# QwenRemoteError lives in qwen_remote.py (sibling, group 2 owner);
-# re-export it here so every qwen_remote_client failure passes isinstance
-# checks against the SAME class used for config resolution.
+# QwenRemoteError + the shared clamp resolver live in qwen_remote.py (sibling,
+# group 2 owner); import them so every qwen_remote_client failure passes
+# isinstance checks against the SAME class used for config resolution.
+import qwen_remote  # noqa: E402
 from qwen_remote import QwenRemoteError  # noqa: E402,F401
-
-
-class RemoteConfigError(QwenRemoteError):
-    """QWEN_BACKEND/QWEN_REMOTE_* misconfiguration (category: config)."""
-    category = "config"
-
-    def __init__(self, message: str = ""):
-        super().__init__(_q_message(message, self.category))
 
 
 class RemoteConnectionError(QwenRemoteError):
@@ -240,6 +229,23 @@ def _build_opener():
     )
 
 
+_URL_USERINFO = re.compile(r"([a-zA-Z][a-zA-Z0-9+.\-]*://)[^\s/@]+(?=@)")
+
+
+def _sanitize_transport_reason(reason, url: str = "") -> str:
+    """Strip credentials/URLs from a socket reason before it enters a message.
+
+    A urllib/OS reason can embed the configured URL (userinfo password) or an
+    address; the message contract forbids both (design decision 10). The exact
+    configured URL is replaced first, then any userinfo credentials sitting
+    before an `@` in a URL are redacted.
+    """
+    text = str(reason)
+    if url:
+        text = text.replace(url, "<redacted-url>")
+    return _URL_USERINFO.sub(r"\1<redacted>", text)
+
+
 def perform_http_post(url: str, payload: bytes, headers: dict, timeout=None):
     """POST and return (status, text). Typed errors on all failure shapes."""
     request = urllib.request.Request(url, data=payload, method="POST")
@@ -270,15 +276,23 @@ def perform_http_post(url: str, payload: bytes, headers: dict, timeout=None):
         reason = getattr(exc, "reason", exc)
         if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
             raise RemoteTimeoutError(
-                f"remote engine did not answer within the per-request timeout ({reason})"
+                "remote engine did not answer within the per-request timeout "
+                "(%s)" % _sanitize_transport_reason(reason, url)
             ) from exc
-        raise RemoteConnectionError(f"cannot reach the remote engine ({reason})") from exc
+        raise RemoteConnectionError(
+            "cannot reach the remote engine (%s)"
+            % _sanitize_transport_reason(reason, url)
+        ) from exc
     except TimeoutError as exc:  # read-side timeout raised bare
         raise RemoteTimeoutError(
-            f"remote engine read timed out within the per-request timeout ({exc})"
+            "remote engine read timed out within the per-request timeout (%s)"
+            % _sanitize_transport_reason(exc, url)
         ) from exc
     except OSError as exc:
-        raise RemoteConnectionError(f"transport failure to the remote engine ({exc})") from exc
+        raise RemoteConnectionError(
+            "transport failure to the remote engine (%s)"
+            % _sanitize_transport_reason(exc, url)
+        ) from exc
 
 
 # --- reply parser (G4) ------------------------------------------------------
@@ -402,22 +416,14 @@ def transcribe_window_meta(audio_url, config: dict, language=None, context=None)
 
 
 def clamp_remote_pool_size(requested, fallback: int = 4, cap: int = 8) -> int:
-    """Concurrency bound: reuse the PREDICTOR clamp, never trust raw input.
+    """Concurrency bound: the SAME resolver as predict.resolve_qwen_batch_size.
 
-    predict.resolve_qwen_batch_size already logs/normalizes; this is a
-    local mirror (importing predict is GPU-forbidden here) with the same
-    semantics: absent/invalid/<=0 -> default, > cap -> cap.
+    Delegates to the shared pure helper `qwen_remote.resolve_batch_size`
+    (importing predict is GPU-forbidden here), so the remote pool size can
+    never drift from the local batch clamp: absent/invalid/<=0 -> default,
+    else clamped to [1, cap].
     """
-    if requested is None:
-        return fallback
-    if isinstance(requested, bool) or not isinstance(requested, int):
-        if isinstance(requested, float) and requested.is_integer():
-            requested = int(requested)
-        else:
-            return fallback
-    if requested <= 0:
-        return fallback
-    return min(requested, cap)
+    return qwen_remote.resolve_batch_size(requested, fallback, cap)
 
 
 # --- structured log (P1-F: one `qwen-remote:` line per transcription) --------

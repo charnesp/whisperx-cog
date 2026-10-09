@@ -95,26 +95,27 @@ def resolve_qwen_batch_size(batch_size, provided: bool = True) -> int:
     """
     if not provided or batch_size is None:
         return QWEN_DEFAULT_BATCH
+    resolved = qwen_remote.resolve_batch_size(
+        batch_size, QWEN_DEFAULT_BATCH, QWEN_MAX_BATCH
+    )
     try:
         value = int(batch_size)
     except (TypeError, ValueError):
-        return QWEN_DEFAULT_BATCH
+        return resolved
     if value <= 0:
         logger.warning(
             "Qwen batch_size %d invalid (non-positive), using default %d",
             value,
             QWEN_DEFAULT_BATCH,
         )
-        return QWEN_DEFAULT_BATCH
-    clamped = max(1, min(QWEN_MAX_BATCH, value))
-    if clamped != value:
+    elif resolved != value:
         logger.warning(
             "Qwen batch_size clamped: %d -> %d (allowed range 1-%d)",
             value,
-            clamped,
+            resolved,
             QWEN_MAX_BATCH,
         )
-    return clamped
+    return resolved
 
 
 def format_qwen_context(hotwords) -> tuple[str, bool]:
