@@ -5,8 +5,8 @@
 
 ## 2. Env resolution + remote config (GPU-free, fail-fast at setup)
 
-- [ ] 2.1 RED: `resolve_remote_config()` — `QWEN_BACKEND` default `local` when unset; `remote` accepted; invalid value -> `local` + captured warning; `remote` without `QWEN_REMOTE_BASE_URL` -> typed `QwenRemoteError:` config error naming the variable; `QWEN_REMOTE_MODEL` mandatory in remote mode (same fail-fast); `QWEN_REMOTE_TIMEOUT_S` default 300, non-integer -> error; URL scheme limited to http/https, trailing-slash normalized, `/chat/completions` join tested; NO code constant holding any host/port/model name
-- [ ] 2.2 GREEN: implement `resolve_remote_config()` reading env at call time (resolved once in `setup()` fail-fast per design decision 9); run `make -f Makefile.harness check`
+- [x] 2.1 RED: `resolve_remote_config()` — `QWEN_BACKEND` default `local` when unset; `remote` accepted; invalid value -> `local` + captured warning; `remote` without `QWEN_REMOTE_BASE_URL` -> typed `QwenRemoteError:` config error naming the variable; `QWEN_REMOTE_MODEL` mandatory in remote mode (same fail-fast); `QWEN_REMOTE_TIMEOUT_S` default 300, non-integer -> error; URL scheme limited to http/https, trailing-slash normalized, `/chat/completions` join tested; NO code constant holding any host/port/model name
+- [x] 2.2 GREEN: implement `resolve_remote_config()` reading env at call time (resolved once in `setup()` fail-fast per design decision 9); run `make -f Makefile.harness check`
 
 ## 3. Remote client module (GPU-free)
 
