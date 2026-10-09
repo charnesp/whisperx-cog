@@ -53,10 +53,17 @@ BASE_SYSTEM = (
     "transcription text only."
 )
 SYSTEM_WITH_CONTEXT = BASE_SYSTEM + " Terms and names expected: " + HOTWORD_CONTEXT + "."
-SYSTEM_WITH_LANG_FR = BASE_SYSTEM + " Reply in French (ISO code 'fr')."
+# Language instruction is NEUTRAL and derived from the ISO code: it must name
+# the code the caller passed, never a hard-coded language (regression: the
+# template used to be frozen on French and only had its "'fr'" token swapped).
+def _lang_instruction(code):
+    return "Reply in the language whose ISO code is %r." % code
+
+
+SYSTEM_WITH_LANG_FR = BASE_SYSTEM + " " + _lang_instruction("fr")
 SYSTEM_WITH_BOTH = (
-    BASE_SYSTEM + " Reply in French (ISO code 'fr')."
-    " Terms and names expected: " + HOTWORD_CONTEXT + "."
+    BASE_SYSTEM + " " + _lang_instruction("fr")
+    + " Terms and names expected: " + HOTWORD_CONTEXT + "."
 )
 EXPECTED_HEADERS = (
     ("Content-Type", "application/json"),
@@ -307,6 +314,20 @@ class TestChatCompletionPayload(unittest.TestCase):
     def test_language_and_context_together(self):
         payload = self._payload(language="fr", context=HOTWORD_CONTEXT)
         self.assertEqual(payload["messages"][0]["content"], SYSTEM_WITH_BOTH)
+
+    def test_language_instruction_is_neutral_for_every_code(self):
+        """The instruction names the CALLER's code — never a frozen language.
+
+        Regression (review finding P1-B): the template used to read
+        "Reply in French (ISO code '<code>')", so language='de' produced
+        "Reply in French (ISO code 'de')".
+        """
+        for code in ("fr", "en", "de"):
+            payload = self._payload(language=code)
+            content = payload["messages"][0]["content"]
+            self.assertEqual(content, BASE_SYSTEM + " " + _lang_instruction(code))
+            self.assertNotIn("French", content)
+            self.assertIn(repr(code), content)
 
     def test_payload_built_fresh_per_call_no_shared_mutable_state(self):
         a = self._payload(context=HOTWORD_CONTEXT)
