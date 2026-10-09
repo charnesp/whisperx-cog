@@ -10,19 +10,19 @@
 
 ## 3. Remote client module (GPU-free)
 
-- [ ] 3.1 RED: tests for `qwen_remote.py` HTTP double written as a mirror of the vLLM 0.30.0 contract (chat.completion envelope `choices[0].message.content`, error shapes for connection-refused / 5xx / socket timeout / empty content): request body pins `model` from env config, `temperature=0`, bounded `max_tokens`, NEVER `response_format=verbose_json` nor `timestamp_granularities` (negative assertion)
-- [ ] 3.2 RED: explicit `ProxyHandler({})` decision test (urllib must NOT honor HTTP(S)_PROXY for the internal call) + bandit B310 `# nosec` justified by the scheme validation
-- [ ] 3.3 GREEN: implement the injectable stdlib-urllib client `transcribe_windows(windows, config, client)` posting one multimodal chat/completions per window (audio_url data URI, wav mono 16 kHz PCM16, deterministic encoder test: header/sample-rate/channels) with the `context` system message in EVERY request; client callable from a thread pool (no shared mutable state); `make -f Makefile.harness check`
+- [x] 3.1 RED: tests for `qwen_remote.py` HTTP double written as a mirror of the vLLM 0.30.0 contract (chat.completion envelope `choices[0].message.content`, error shapes for connection-refused / 5xx / socket timeout / empty content): request body pins `model` from env config, `temperature=0`, bounded `max_tokens`, NEVER `response_format=verbose_json` nor `timestamp_granularities` (negative assertion)
+- [x] 3.2 RED: explicit `ProxyHandler({})` decision test (urllib must NOT honor HTTP(S)_PROXY for the internal call) + bandit B310 `# nosec` justified by the scheme validation
+- [x] 3.3 GREEN: implement the injectable stdlib-urllib client `transcribe_windows(windows, config, client)` posting one multimodal chat/completions per window (audio_url data URI, wav mono 16 kHz PCM16, deterministic encoder test: header/sample-rate/channels) with the `context` system message in EVERY request; client callable from a thread pool (no shared mutable state); `make -f Makefile.harness check`
 
 ## 4. Response parser (GPU-free)
 
-- [ ] 4.1 RED: parser tests — `language X<asr_text>text` -> text only; missing `<asr_text>` -> typed parse error (fail explicit, decision B6); `language None<asr_text>` / empty transcription -> empty segment (same rule as local path); empty/missing content -> typed error; multi-choice -> first choice; `finish_reason=="length"` -> typed error (never silently-truncated text)
-- [ ] 4.2 GREEN: implement the pure parser; run `make -f Makefile.harness check`
+- [x] 4.1 RED: parser tests — `language X<asr_text>text` -> text only; missing `<asr_text>` -> typed parse error (fail explicit, decision B6); `language None<asr_text>` / empty transcription -> empty segment (same rule as local path); empty/missing content -> typed error; multi-choice -> first choice; `finish_reason=="length"` -> typed error (never silently-truncated text)
+- [x] 4.2 GREEN: implement the pure parser; run `make -f Makefile.harness check`
 
 ## 5. Window concurrency + order + failure semantics (GPU-free)
 
-- [ ] 5.1 RED: 3 windows pool 2 -> all transcribed, results ordered by VAD window start regardless of completion order; one window failing -> whole prediction fails with typed error, pending futures cancelled (`cancel_futures=True`), in-flight results discarded; pool never exceeds the clamped batch_size (`<=0` / non-integer via the existing clamp helper); zero retries: a 5xx in the mock -> immediate typed failure
-- [ ] 5.2 GREEN: implement the bounded-pool orchestrator (concurrency == clamped batch_size); per-request connect+read timeout from `QWEN_REMOTE_TIMEOUT_S`; run `make -f Makefile.harness check`
+- [x] 5.1 RED: 3 windows pool 2 -> all transcribed, results ordered by VAD window start regardless of completion order; one window failing -> whole prediction fails with typed error, pending futures cancelled (`cancel_futures=True`), in-flight results discarded; pool never exceeds the clamped batch_size (`<=0` / non-integer via the existing clamp helper); zero retries: a 5xx in the mock -> immediate typed failure
+- [x] 5.2 GREEN: implement the bounded-pool orchestrator (concurrency == clamped batch_size); per-request connect+read timeout from `QWEN_REMOTE_TIMEOUT_S`; run `make -f Makefile.harness check`
 
 ## 6. predict.py branching
 
