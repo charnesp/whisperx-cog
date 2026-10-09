@@ -8,7 +8,7 @@ The `qwen3-asr` backend in cog loads ~5 GB VRAM per run (full model load/unload 
 - The remote base URL (`QWEN_REMOTE_BASE_URL`) and model name (`QWEN_REMOTE_MODEL`) are configurable ONLY via environment: no address, port or model name hard-coded anywhere in the repository (code, tests, docs, compose, k8s); remote misconfiguration = fail-fast typed error at predictor boot
 - Backend selector env: `QWEN_BACKEND=remote|local`, default `local` (zero behavioral change at deploy; flippable by env); kill-switch `ENABLE_QWEN` unchanged and effective in both modes
 - Output invariant: segments produced by the remote path carry their timestamps from the LOCAL VAD chunking (start/end untouched); the ForcedAligner alignment and pyannote diarization stages downstream are unchanged
-- Remote failures are explicit typed errors (`qwen_remote_unavailable`, 502) — never a silent fallback to the local engine
+- Remote failures are explicit typed errors (`QwenRemoteError:` with a category; HTTP **500 `server_error`** on the OpenAI STT surface, **502** on the `/predictions` proxy) — never a silent fallback to the local engine
 - Infra (out of repo): `the remote ASR engine` service on the existing GPU stack + `qwen3-asr` entry in the model gateway (cohabiting with retrieval, never cohabiting with the local LLM engine)
 
 ## Non-goals
@@ -40,5 +40,5 @@ The `qwen3-asr` backend in cog loads ~5 GB VRAM per run (full model load/unload 
 - Response parsing: the multimodal reply carries a `language X<asr_text>...` prefix — parser tested against the real format (spike payload captured) and structured-output cases
 - Cold start: first call after inactivity = the model gateway wake (measured: a cold boot of tens of seconds and a much shorter sleep/wake cycle) — per-request timeout default 300 s absorbs it; zero-retry posture documented (a mid-swap 5xx surfaces explicitly)
 - VRAM: the remote engine's footprint is a fraction of the deployment's budget; it is scheduled to share the gateway with the retrieval models and never with the local LLM engine, exclusivity being carried by the gateway
-- Remote unavailable: explicit typed `QwenRemoteError:` message (categories config/connection/timeout/http_status/parse), prediction failure at the bridge (502), no fallback and no retry at v1 (decided)
+- Remote unavailable: explicit typed `QwenRemoteError:` message (categories config/connection/timeout/http_status/parse), prediction failure at the bridge (500 `server_error` on the OpenAI STT surface / 502 on the `/predictions` proxy), no fallback and no retry at v1 (decided)
 - Concurrency: VAD windows fly with a bounded pool reusing the clamped batch_size (4 default / 8 cap); VAD order preserved in the fused result

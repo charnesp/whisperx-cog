@@ -55,7 +55,7 @@ Out of range float values are not JSON compliant: nan
 
 ### Remote qwen3-asr logs (`qwen-remote:`)
 
-When `QWEN_BACKEND=remote`, the whisperx container logs the remote path under the **`qwen-remote:`** prefix: the remote **host**, the **window count**, per-batch **durations**, and the **status**. Audio payloads and hotword content are **never** logged (the same no-content rule as the local qwen context path). Remote failures additionally carry the typed `QwenRemoteError:` category (`config`/`connection`/`timeout`/`http_status`/`parse` — see [DATA_CONTRACTS.md](./DATA_CONTRACTS.md)).
+When `QWEN_BACKEND=remote`, the whisperx container logs **one structured record per remote transcription** under the **`qwen-remote:`** prefix, carrying the remote **host** (host only — never the full URL, port or credentials), the **window count**, the **total duration** and the **status** (`ok`/`failed`). Audio payloads and hotword/context content are **never** logged (the same no-content rule as the local qwen context path). Remote failures additionally surface the typed `QwenRemoteError:` category (`config`/`connection`/`timeout`/`http_status`/`parse` — see [DATA_CONTRACTS.md](./DATA_CONTRACTS.md)).
 
 ```bash
 # Remote qwen3-asr activity
@@ -64,6 +64,25 @@ kubectl logs <pod> -c whisperx | grep 'qwen-remote:'
 ```
 
 `<pod>` is any pod carrying the `app: whisperx` label.
+
+### Switching local ↔ remote (runbook)
+
+`QWEN_BACKEND` is resolved **once at boot** (`Predictor.setup()` caches the config in `predict.py`), **not** per request — flipping it **requires a container restart** (`docker compose up -d --force-recreate whisperx` or `kubectl rollout restart deployment/whisperx-stack`). Reverting is the same operation with `QWEN_BACKEND=local`.
+
+- **Fail-fast blast radius:** a broken REMOTE config (missing `QWEN_REMOTE_BASE_URL` / `QWEN_REMOTE_MODEL`, non-http(s) scheme) makes `setup()` raise, so the **whole whisperx container fails to start** — the faster-whisper models are down too. Validate both remote vars before flipping the backend.
+- **Timeout sizing:** `QWEN_REMOTE_TIMEOUT_S` (cog, per request, default 300) **must be strictly lower than** the bridge's `OPENAI_STT_TIMEOUT_SECONDS` (default 300) — otherwise the bridge 504 fires before cog's typed `QwenRemoteError:` can surface.
+- **Timeout semantics:** `QWEN_REMOTE_TIMEOUT_S` is a **per-operation socket timeout** (applied to connect, then read), not a wall-clock bound on a whole transcription: a slow multi-window batch may exceed it in total. A cold model wake \(tens of seconds\) is one idle gap absorbed by the per-request value.
+
+Diagnose by `QwenRemoteError:` category:
+
+| Category | Meaning / first check |
+|----------|-----------------------|
+| `config` | remote vars missing/invalid; the container likely never started — read the boot logs |
+| `connection` | host/port/network unreachable from the pod — check the service name and DNS |
+| `timeout` | engine silent past `QWEN_REMOTE_TIMEOUT_S` — check engine and gateway load and compare with `OPENAI_STT_TIMEOUT_SECONDS` |
+| `http_status` | engine answered non-2xx (e.g. mid-swap) — read the engine logs |
+| `parse` | reply unusable (`language X` prefix without `<asr_text>`, empty, `finish_reason=length`) — check the engine model/prompt |
+
 
 ## Metrics
 

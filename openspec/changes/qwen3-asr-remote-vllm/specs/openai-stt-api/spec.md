@@ -38,21 +38,6 @@ The remote base URL SHALL come exclusively from `QWEN_REMOTE_BASE_URL`; the remo
 - **WHEN** the hygiene grep gate runs over the repository
 - **THEN** no personal IP or port is found; docs use a neutral placeholder
 
-#### Scenario: URL taken from environment
-
-- **WHEN** `QWEN_BACKEND=remote` and `QWEN_REMOTE_BASE_URL=http://example.invalid:9000/v1`
-- **THEN** the HTTP client posts to exactly that URL (captured by the injectable client)
-
-#### Scenario: Missing URL fails fast
-
-- **WHEN** `QWEN_BACKEND=remote` and `QWEN_REMOTE_BASE_URL` is unset
-- **THEN** the call fails with an explicit configuration error naming `QWEN_REMOTE_BASE_URL` (no default address, no silent local fallback)
-
-#### Scenario: Repo carries no concrete address
-
-- **WHEN** the hygiene grep gate runs over the repository
-- **THEN** no personal IP or port is found; docs use a neutral placeholder
-
 ### Requirement: Remote request contract
 
 Each VAD window SHALL be transcribed by one multimodal chat completion request to `{QWEN_REMOTE_BASE_URL}/chat/completions` with `model=QWEN_REMOTE_MODEL`, `temperature=0`, a bounded `max_tokens`, audio as a `data:audio/wav;base64` URI (mono 16 kHz PCM16 wav) in `audio_url`, and the `context` system message (formatted hotwords) in EVERY request. The client SHALL never request server-side timestamps (no `verbose_json`, no `timestamp_granularities`). Window concurrency SHALL be bounded by the clamped batch_size (default 4, cap 8, values <=0 or non-integer rejected by the existing clamp helper), and results SHALL be fused in VAD window order. The `language` param, when provided, SHALL be carried as a system-message instruction.
@@ -70,7 +55,7 @@ Each VAD window SHALL be transcribed by one multimodal chat completion request t
 #### Scenario: Language instruction carried
 
 - **WHEN** the client provides `language=fr`
-- **THEN** every remote request's system message carries the French-language instruction
+- **THEN** every remote request's system message carries a language instruction naming the caller's ISO code (`fr`), never a hard-coded language name
 
 #### Scenario: Order preserved under concurrency
 
@@ -79,7 +64,7 @@ Each VAD window SHALL be transcribed by one multimodal chat completion request t
 
 ### Requirement: Remote response parsing
 
-The reply content SHALL be parsed to text only: a `language X<asr_text>text` body SHALL yield `text` (prefix never present in segments); content without the prefix (structured output) SHALL be used as-is; empty or missing content SHALL produce a typed error; `finish_reason=="length"` SHALL produce a typed error (never silently-truncated text); `language None<asr_text>` or empty transcription (silence) SHALL yield an empty segment with the same rule as the local path. The reply text SHALL NEVER determine segment timestamps.
+The reply content SHALL be parsed to text only: a `language X<asr_text>text` body SHALL yield `text` (prefix never present in segments); a `language X` prefix with NO `<asr_text>` marker SHALL produce a typed parse error (fail explicit, never leak the prefix into the segment); content with no prefix at all (structured output) SHALL be used as-is; empty or missing content SHALL produce a typed error; `finish_reason=="length"` SHALL produce a typed error (never silently-truncated text); `language None<asr_text>` or empty transcription (silence) SHALL yield an empty segment with the same rule as the local path. The `language X` token, when present, SHALL be normalised to an ISO code and propagated so a caller that passed no `language` gets the engine-detected language (local-path parity). The reply text SHALL NEVER determine segment timestamps.
 
 #### Scenario: Prefixed reply parsed
 
@@ -91,14 +76,24 @@ The reply content SHALL be parsed to text only: a `language X<asr_text>text` bod
 - **WHEN** the reply content is empty
 - **THEN** the batch fails with a typed error (not an empty transcript)
 
+#### Scenario: Language prefix without marker is a typed error
+
+- **WHEN** the reply content is `language French hello world` (a `language X` prefix with no `<asr_text>` marker)
+- **THEN** the batch fails with a typed `parse`-category error, never a segment carrying `language French`
+
+#### Scenario: Detected language propagated when none is forced
+
+- **WHEN** the client passes no `language` and the engine replies `language French<asr_text>...`
+- **THEN** the fused result reports `language=fr` (the engine-detected ISO code), not the forced fallback `en`
+
 ### Requirement: Remote failures are explicit (no fallback)
 
-The remote configuration SHALL be resolved once in `setup()` with fail-fast on misconfiguration; in remote mode the local qwen-ASR loader SHALL never be invoked. `QWEN_REMOTE_TIMEOUT_S` (default 300) SHALL be a per-request connect+read timeout; at v1 there SHALL be zero retries (a mid-swap 502 surfaces as `qwen_remote_unavailable`, never retried). One failed window SHALL fail the whole prediction with pending futures cancelled; in-flight requests may complete but their results are discarded. Remote failures SHALL surface at the bridge boundary as a prediction failure carrying a stable grep-able message prefixed `QwenRemoteError:` with a category (config/connection/timeout/http_status/parse); messages SHALL never contain the full URL, the audio payload, or the whole reply body (truncated). There SHALL be NO silent fallback to the local engine (operator decision 2026-10-09); logs carry the prefix `qwen-remote:` with status and elapsed time, never audio or hotword content.
+The remote configuration SHALL be resolved once in `setup()` with fail-fast on misconfiguration; in remote mode the local qwen-ASR loader SHALL never be invoked. `QWEN_REMOTE_TIMEOUT_S` (default 300) SHALL be a per-request connect+read timeout; at v1 there SHALL be zero retries (a mid-swap non-2xx surfaces as a typed `QwenRemoteError:` http_status error, never retried). One failed window SHALL fail the whole prediction with pending futures cancelled; in-flight requests may complete but their results are discarded. Remote failures SHALL surface at the bridge boundary as a prediction failure carrying a stable grep-able message prefixed `QwenRemoteError:` with a category (config/connection/timeout/http_status/parse); messages SHALL never contain the full URL, the audio payload, or the whole reply body (truncated). There SHALL be NO silent fallback to the local engine (operator decision 2026-10-09); logs carry the prefix `qwen-remote:` with host, window count, status and elapsed time, never audio, hotword content or the full URL.
 
 #### Scenario: Remote down gives explicit failure
 
 - **WHEN** the remote engine refuses connections and `QWEN_BACKEND=remote`
-- **THEN** the prediction fails with a `QwenRemoteError:` connection-category message and HTTP 502 at the bridge (no local retry, no fallback)
+- **THEN** the prediction fails with a `QwenRemoteError:` connection-category message; the failure surfaces on `POST /v1/audio/transcriptions` as HTTP 500 `server_error` (the OpenAI-compatible surface) and on the `/predictions` proxy path as HTTP 502 (no local retry, no fallback)
 
 #### Scenario: Timeout honored
 
@@ -117,7 +112,7 @@ The remote configuration SHALL be resolved once in `setup()` with fail-fast on m
 
 ### Requirement: Kill-switch unchanged under remote mode
 
-The `ENABLE_QWEN` kill-switch SHALL remain unchanged. It is enforced ONLY at the bridge (which this change does not modify): explicitly falsy values (`0`, `false`, empty, `no`, `off`) SHALL continue to reject `model=qwen3-asr` with HTTP 400 and a feature-disabled message before any request reaches cog, for BOTH `QWEN_BACKEND` values (the resolved backend is irrelevant to the gate). cog SHALL NOT duplicate the gate.
+The `ENABLE_QWEN` kill-switch SHALL remain unchanged. The bridge (which this change does not modify) is the primary gate: explicitly falsy values (`0`, `false`, empty, `no`, `off`) SHALL continue to reject `model=qwen3-asr` with HTTP 400 and a feature-disabled message before any request reaches cog, for BOTH `QWEN_BACKEND` values (the resolved backend is irrelevant to the gate). cog keeps its PRE-EXISTING `qwen_enabled()` defense-in-depth check unchanged; this change adds NO new gate in cog — the remote branch sits behind the same single existing checkpoint.
 
 #### Scenario: Kill-switch precedes backend selection
 

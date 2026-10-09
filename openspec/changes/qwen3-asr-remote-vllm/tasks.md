@@ -16,7 +16,7 @@
 
 ## 4. Response parser (GPU-free)
 
-- [x] 4.1 RED: parser tests — `language X<asr_text>text` -> text only; missing `<asr_text>` -> typed parse error (fail explicit, decision B6); `language None<asr_text>` / empty transcription -> empty segment (same rule as local path); empty/missing content -> typed error; multi-choice -> first choice; `finish_reason=="length"` -> typed error (never silently-truncated text)
+- [x] 4.1 RED: parser tests — `language X<asr_text>text` -> text only; `language X` prefix WITHOUT `<asr_text>` marker -> typed parse error (fail explicit, decision B6); content with no prefix at all (structured output) -> used as-is; `language None<asr_text>` / empty transcription -> empty segment (same rule as local path); empty/missing content -> typed error; multi-choice -> first choice; `finish_reason=="length"` -> typed error (never silently-truncated text); the `language X` token is normalised to an ISO code and propagated (detected language surfaced when the caller passes none)
 - [x] 4.2 GREEN: implement the pure parser; run `make -f Makefile.harness check`
 
 ## 5. Window concurrency + order + failure semantics (GPU-free)
@@ -27,7 +27,7 @@
 ## 6. predict.py branching
 
 - [x] 6.1 RED (GPU-free): with a mocked model layer — `QWEN_BACKEND=remote` routes the qwen transcription to the remote client and NEVER calls the local `asr_qwen` loader (loader mocked to count calls); `QWEN_BACKEND=local`/unset keeps the current in-process call (identity test on the untouched path); remote failure -> `QwenRemoteError:` typed message with category, no local fallback attempt; setup() fail-fast on broken remote config (test at predictor level); ForcedAligner+pyannote local stages called identically in both modes
-- [x] 6.2 GREEN: minimal branching in `predict.py`; remote windows carry their LOCAL VAD start/end (server content never timestamps); `ENABLE_QWEN` gate stays bridge-only (no duplicate gate in cog); run `make -f Makefile.harness check`
+- [x] 6.2 GREEN: minimal branching in `predict.py`; remote windows carry their LOCAL VAD start/end (server content never timestamps); `ENABLE_QWEN` gate unchanged (bridge is the primary gate; the pre-existing cog `qwen_enabled()` check is untouched — no NEW gate added); run `make -f Makefile.harness check`
 - [x] 6.3 BLUE: extract shared helpers, remove duplication; full `check` green
 
 ## 7. Regression
@@ -46,7 +46,7 @@
 
 ## 10. GPU smoke (manual, canary pre-merge — operator criteria)
 
-- [x] 10.1 Acceptance criteria (fixed BEFORE run): same FR fixture in local vs remote mode — segment count identical (VAD-owned), word timestamps present in both, forced language respected, WER gap remote-vs-local recorded (no fixed threshold at v1, measured value recorded), cold and warm latency recorded, VRAM peak logged; the model gateway sleep/wake cycle exercised once — RUN 2026-10-09, all criteria met (results in 10.2)
+- [x] 10.1 Acceptance criteria (fixed BEFORE run): same FR fixture in local vs remote mode — segment count identical (VAD-owned), word timestamps present in both, forced language respected, WER gap remote-vs-local recorded (no fixed threshold at v1, measured value recorded), cold and warm latency recorded, VRAM peak logged; the model gateway sleep/wake cycle exercised once — RUN 2026-10-09: **business criteria met** (segment count, segment boundaries, word timestamps, forced language, WER gap 7.04 %, cold/warm latency, VRAM; results in 10.2). **Honest qualification of the model gateway criterion:** the sleep/wake cycle was exercised on the THROWAWAY engine directly (its `/sleep` + `/wake_up` endpoints), NOT through the model gateway — Qwen3-ASR is not yet registered in the model gateway production config. the model gateway routing for this model is therefore a **deployment prerequisite, not validated by this run**.
 - [x] 10.2 Record results in this file (annotation on the task); commit nothing on GPU hosts
 
 ### 10.2 GPU smoke results - 2026-10-09 (the shared GPU, throwaway containers, no stack touched)
@@ -72,4 +72,5 @@ Setup: one throwaway vLLM engine serving the provisioned Qwen3-ASR snapshot (no 
 ## 11. Review + security audit closing
 
 - [ ] 11.1 Deep review by 2 read-only subagents (code + usage), findings fixed by a dedicated fix subagent, confirmation re-review
+  - _Fix subagent 2026-10-09: P1-A (parser prefix w/o marker -> typed error), P1-B (neutral language instruction), P1-C (server-detected language propagated when `language=None`), P1-D (non-vacuous no-fallback test), P1-F (`qwen-remote:` log actually emitted) fixed in RED/GREEN TDD cycles; P1-E spec/docs corrections applied. Confirmation re-review still PENDING, so this box stays unchecked._
 - [ ] 11.2 Security audit (chantier gate): leak gate green (group 1), no secrets in env docs or committed fixtures, hotwords/audio never logged, remote errors explicit, zero-retry posture documented; report committed with the change

@@ -105,9 +105,8 @@ client-facing bridge contract is unchanged.
 | `model` | `QWEN_REMOTE_MODEL`, verbatim |
 | `temperature` | `0` |
 | `max_tokens` | bounded |
-| `messages[0]` (`system`) | meeting `context` (formatted hotwords) + optional language instruction |
-| `messages[1]` content part 1 (`text`) | the transcription instruction |
-| `messages[1]` content part 2 (`audio_url`) | `data:audio/wav;base64,...` (mono 16 kHz PCM16) |
+| `messages[0]` (`system`, one string) | transcription instruction + optional language instruction (the caller's ISO code) + optional meeting `context` (formatted hotwords), space-joined |
+| `messages[1]` (`user`) `content` | a single `audio_url` part: `data:audio/wav;base64,...` (mono 16 kHz PCM16) |
 
 The client never requests server-side timestamps (no `verbose_json`, no
 `timestamp_granularities`). Window concurrency is bounded by the clamped
@@ -118,10 +117,14 @@ content never appears in logs.
 ### Response
 
 `choices[0].message.content` carries `language X<asr_text>text`: only `text`
-becomes the segment text (the prefix is never part of a segment). Content
-without the prefix (structured output) is used as-is. Empty/missing content, a
-missing `<asr_text>` marker, or `finish_reason == "length"` is a typed error.
-Segment `start`/`end` always come from the local VAD window, never the reply.
+becomes the segment text (the prefix is never part of a segment). The `language X`
+token is normalised to an ISO code and propagated: when the caller passed no
+`language`, the result reports the engine-detected code (local-path parity), with
+`en` only as a last-resort fallback. Content with no `language`/`<asr_text>`
+prefix at all (structured output) is used as-is. A `language X` prefix WITHOUT an
+`<asr_text>` marker, empty/missing content, or `finish_reason == "length"` is a
+typed error. Segment `start`/`end` always come from the local VAD window, never
+the reply.
 
 ### Error taxonomy (`QwenRemoteError:`)
 
@@ -134,11 +137,14 @@ with exactly one category:
 | `connection` | engine unreachable (connection refused, DNS, TLS) |
 | `timeout` | no answer within `QWEN_REMOTE_TIMEOUT_S` |
 | `http_status` | engine answered a non-2xx status |
-| `parse` | reply body unusable (missing/empty content, `finish_reason == "length"`, missing `<asr_text>`) |
+| `parse` | reply body unusable (missing/empty content, `finish_reason == "length"`, a `language X` prefix with no `<asr_text>` marker) |
 
 At v1 there are **zero retries** and **no silent fallback** to the local engine:
-one failed window fails the whole prediction (HTTP 502 at the bridge). Messages
-never carry the full URL, the audio payload or the whole reply body (truncated).
+one failed window fails the whole prediction. The failure status depends on the
+bridge surface: `POST /v1/audio/transcriptions` returns HTTP **500 `server_error`**
+(`bridge/openai_compat.py`), while the `/predictions` proxy path returns HTTP **502**
+(`bridge/bridge.py`). Messages never carry the full URL, the audio payload or the
+whole reply body (truncated).
 
 Unit tests: `tests/test_qwen_remote_config.py`, `tests/test_qwen_remote_client.py`,
 `tests/test_qwen_remote_parser.py`, `tests/test_qwen_remote_pool.py`.

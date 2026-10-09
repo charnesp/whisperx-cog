@@ -173,7 +173,7 @@ The `whisper-1` alias routes to the `BRIDGE_DEFAULT_MODEL` env variable (default
 
 **Remote qwen3-asr backend** (`QWEN_BACKEND=remote`; default `local`, unchanged):
 
-The whisperx container can delegate `qwen3-asr` transcription to an OpenAI-compatible vLLM engine reached over HTTP instead of loading the model in-process. The address and the model name are injected at deploy time: the repository carries no host, port or model name. The bridge contract and the `ENABLE_QWEN` kill-switch are unchanged (the kill-switch stays **bridge-only** — see [docs/BRIDGE.md](./docs/BRIDGE.md)).
+The whisperx container can delegate `qwen3-asr` transcription to an OpenAI-compatible vLLM engine reached over HTTP instead of loading the model in-process. The address and the model name are injected at deploy time: the repository carries no host, port or model name. The bridge contract and the `ENABLE_QWEN` kill-switch are unchanged; this change adds **no new gate in cog** (the pre-existing cog `qwen_enabled()` defense-in-depth check is untouched — see [docs/BRIDGE.md](./docs/BRIDGE.md)).
 
 ```bash
 # Injected at deploy time (compose .env / k8s env) — neutral placeholders only
@@ -192,7 +192,7 @@ QWEN_REMOTE_TIMEOUT_S=300
 | `QWEN_REMOTE_MODEL` | — (required in `remote`) | Model name sent verbatim in every request. No default |
 | `QWEN_REMOTE_TIMEOUT_S` | `300` | Per-request connect+read timeout (seconds) |
 
-Remote mode fails fast at `setup()` with a typed `QwenRemoteError:` config error when `QWEN_REMOTE_BASE_URL` or `QWEN_REMOTE_MODEL` is missing. See [docs/DATA_CONTRACTS.md](./docs/DATA_CONTRACTS.md) for the request/response shapes and the error taxonomy, and [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md) for the `qwen-remote:` log prefix.
+Remote mode fails fast at `setup()` with a typed `QwenRemoteError:` config error when `QWEN_REMOTE_BASE_URL` or `QWEN_REMOTE_MODEL` is missing. `QWEN_BACKEND` is read once at boot, so switching local ↔ remote requires a **container restart**; a broken remote config stops the whole whisperx container. Keep `QWEN_REMOTE_TIMEOUT_S` below the bridge `OPENAI_STT_TIMEOUT_SECONDS`. See [docs/DATA_CONTRACTS.md](./docs/DATA_CONTRACTS.md) for the request/response shapes and the error taxonomy, and [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md) for the `qwen-remote:` log prefix and the switch/diagnosis runbook.
 
 **Not supported (v1):** `known_speaker_references[]` returns HTTP 400 — see [PLANS.md](./PLANS.md) for follow-up.
 
