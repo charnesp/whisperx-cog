@@ -30,10 +30,12 @@ import json
 import logging
 import re
 import struct
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
+from urllib.parse import urlsplit
 
 logger = logging.getLogger("qwen_remote")
 
@@ -418,6 +420,29 @@ def clamp_remote_pool_size(requested, fallback: int = 4, cap: int = 8) -> int:
     return min(requested, cap)
 
 
+# --- structured log (P1-F: one `qwen-remote:` line per transcription) --------
+def _remote_host(config) -> str:
+    """Host-only label for logs: never credentials, never port, never full URL."""
+    raw = ""
+    if isinstance(config, dict):
+        raw = config.get("base_url") or config.get("chat_url") or ""
+    try:
+        return urlsplit(str(raw)).hostname or ""
+    except ValueError:
+        return ""
+
+
+def _log_remote_transcription(config, window_count, status, elapsed_s):
+    """Emit ONE grep-able record. Never the URL, audio, hotwords or context."""
+    logger.info(
+        "qwen-remote: host=%s windows=%d status=%s duration_s=%.3f",
+        _remote_host(config),
+        window_count,
+        status,
+        elapsed_s,
+    )
+
+
 # --- pool orchestrator (G5) -------------------------------------------------
 def transcribe_windows(
     windows,
@@ -462,6 +487,7 @@ def transcribe_windows_meta(
     """
     if not windows:
         return [], []
+    started = time.time()
     worker_count = clamp_remote_pool_size(batch_size)
     texts: list = [None] * len(windows)
     languages: list = [None] * len(windows)
@@ -492,6 +518,9 @@ def transcribe_windows_meta(
     finally:
         if not failed:
             pool.shutdown(wait=True)
+        _log_remote_transcription(
+            config, len(windows), "failed" if failed else "ok", time.time() - started
+        )
     if any(t is None for t in texts):
         raise RemoteConnectionError(
             "a window produced no result (executor shutdown raced)"
