@@ -32,7 +32,7 @@
 
 ## 7. Regression
 
-- [ ] 7.1 Full harness: `make -f Makefile.harness ci` exit 0 (bridge suite included); faster-whisper path untouched
+- [x] 7.1 Full harness: `make -f Makefile.harness ci` exit 0 (bridge suite included); faster-whisper path untouched
 
 ## 8. Compose + k8s env wiring
 

@@ -36,7 +36,6 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 from _predict_stub import install  # noqa: E402
 
-import qwen_remote  # noqa: E402
 from qwen_remote import QwenRemoteError  # noqa: E402
 
 predict = install()
