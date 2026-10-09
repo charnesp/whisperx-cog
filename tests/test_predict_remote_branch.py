@@ -64,6 +64,7 @@ _FAKE_AUDIO = [0.0] * 160000  # 10 s at 16 kHz
 # change these timestamps.
 WINDOWS = [(0.0, 2.0, [0.1, 0.2]), (2.5, 4.0, [0.3, 0.4])]
 WINDOW_TEXTS = ["bonjour", "le monde"]
+WINDOW_LANGS = ["fr", "fr"]  # server-detected language per window (VAD order)
 EXPECTED_SEGMENTS = [
     {"text": "bonjour", "start": 0.0, "end": 2.0},
     {"text": "le monde", "start": 2.5, "end": 4.0},
@@ -144,7 +145,8 @@ class TestRemoteRouting(_RemoteBranchBase):
                 mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
                 mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
                 mock.patch.object(
-                    predict.qwen_remote_client, "transcribe_windows", return_value=list(WINDOW_TEXTS)
+                    predict.qwen_remote_client, "transcribe_windows_meta",
+                    return_value=(list(WINDOW_TEXTS), list(WINDOW_LANGS)),
                 ) as tw:
             self._stack(self._common_patches())
             predictor = self._predictor(REMOTE_CONFIG)
@@ -163,6 +165,46 @@ class TestRemoteRouting(_RemoteBranchBase):
         # (6) segments carry the LOCAL VAD timestamps, not the reply text
         self.assertEqual(list(output.segments), EXPECTED_SEGMENTS)
 
+    def test_remote_uses_detected_language_when_language_none(self):
+        """language=None on the remote path must surface the DETECTED language.
+
+        Review finding P1-C: predict.py forced 'en' (`language or "en"`) and
+        made the aligner load the wrong model on FR audio.
+        """
+        args = dict(QWEN_ARGS)
+        args["language"] = None
+        fake_model = types.SimpleNamespace(transcribe=lambda *a, **k: _local_result())
+        with mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model), \
+                mock.patch.object(predict, "align_qwen", side_effect=lambda a, r, d: r), \
+                mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
+                mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
+                mock.patch.object(
+                    predict.qwen_remote_client, "transcribe_windows_meta",
+                    return_value=(list(WINDOW_TEXTS), ["fr", "fr"]),
+                ) as tw:
+            self._stack(self._common_patches())
+            predictor = self._predictor(REMOTE_CONFIG)
+            output = predictor._run_predict(**args)
+        self.assertEqual(output.detected_language, "fr")
+        self.assertIsNone(tw.call_args.kwargs["language"])  # None still forwarded
+
+    def test_remote_falls_back_to_en_only_without_any_detected_language(self):
+        args = dict(QWEN_ARGS)
+        args["language"] = None
+        fake_model = types.SimpleNamespace(transcribe=lambda *a, **k: _local_result())
+        with mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model), \
+                mock.patch.object(predict, "align_qwen", side_effect=lambda a, r, d: r), \
+                mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
+                mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
+                mock.patch.object(
+                    predict.qwen_remote_client, "transcribe_windows_meta",
+                    return_value=(list(WINDOW_TEXTS), [None, None]),
+                ):
+            self._stack(self._common_patches())
+            predictor = self._predictor(REMOTE_CONFIG)
+            output = predictor._run_predict(**args)
+        self.assertEqual(output.detected_language, "en")
+
     def test_remote_error_propagates_typed_without_local_fallback(self):
         err = QwenRemoteError("QwenRemoteError: connection - cannot reach the remote engine")
         fake_model = types.SimpleNamespace(transcribe=lambda *a, **k: _local_result())
@@ -171,7 +213,7 @@ class TestRemoteRouting(_RemoteBranchBase):
                 mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
                 mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
                 mock.patch.object(
-                    predict.qwen_remote_client, "transcribe_windows", side_effect=err
+                    predict.qwen_remote_client, "transcribe_windows_meta", side_effect=err
                 ) as tw:
             self._stack(self._common_patches())
             predictor = self._predictor(REMOTE_CONFIG)
@@ -198,7 +240,7 @@ class TestLocalPathIdentity(_RemoteBranchBase):
         with mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model) as load_model, \
                 mock.patch.object(predict, "align_qwen", side_effect=lambda a, r, d: r), \
                 mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
-                mock.patch.object(predict.qwen_remote_client, "transcribe_windows") as tw:
+                mock.patch.object(predict.qwen_remote_client, "transcribe_windows_meta") as tw:
             self._stack(self._common_patches())
             predictor = self._predictor(LOCAL_CONFIG)
             output = predictor._run_predict(**QWEN_ARGS)
@@ -252,7 +294,8 @@ class TestAlignmentAndDiarizationParity(_RemoteBranchBase):
                 mock.patch.object(predict, "diarize", diar), \
                 mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
                 mock.patch.object(
-                    predict.qwen_remote_client, "transcribe_windows", return_value=list(WINDOW_TEXTS)
+                    predict.qwen_remote_client, "transcribe_windows_meta",
+                    return_value=(list(WINDOW_TEXTS), list(WINDOW_LANGS)),
                 ):
             self._stack(self._common_patches())
             predictor = self._predictor(config)
@@ -290,7 +333,8 @@ class TestEnableQwenStaysBridgeOnly(_RemoteBranchBase):
                 mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
                 mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
                 mock.patch.object(
-                    predict.qwen_remote_client, "transcribe_windows", return_value=list(WINDOW_TEXTS)
+                    predict.qwen_remote_client, "transcribe_windows_meta",
+                    return_value=(list(WINDOW_TEXTS), list(WINDOW_LANGS)),
                 ):
             self._stack(self._common_patches())
             predictor = self._predictor(REMOTE_CONFIG)
@@ -301,7 +345,7 @@ class TestEnableQwenStaysBridgeOnly(_RemoteBranchBase):
     def test_remote_does_not_bypass_kill_switch(self):
         with mock.patch.dict(os.environ, {"ENABLE_QWEN": "0"}, clear=False), \
                 mock.patch.object(predict, "qwen_remote_windows") as windows, \
-                mock.patch.object(predict.qwen_remote_client, "transcribe_windows") as tw, \
+                mock.patch.object(predict.qwen_remote_client, "transcribe_windows_meta") as tw, \
                 mock.patch.object(_asr_qwen_stub(), "load_model") as load_model:
             self._stack(self._common_patches())
             predictor = self._predictor(REMOTE_CONFIG)

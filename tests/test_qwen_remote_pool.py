@@ -34,6 +34,7 @@ from qwen_remote_client import (  # noqa: E402
     RemoteHTTPStatusError,
     clamp_remote_pool_size,
     transcribe_windows,
+    transcribe_windows_meta,
 )
 
 CONFIG = {
@@ -149,6 +150,39 @@ class TestClampRemotePoolSize(unittest.TestCase):
 
 
 class TestPoolOrderAndCompletion(unittest.TestCase):
+    def test_meta_returns_server_detected_language_per_window(self):
+        """`transcribe_windows_meta` exposes the parsed language per window.
+
+        Review finding P1-C: the server `language X` token was discarded, so
+        predict.py could only fall back to 'en' when the client passed
+        language=None. The meta variant propagates it (VAD order).
+        """
+        texts = ["un", "deux"]
+        langs = ["French", "English"]
+        windows = [f"data:audio/wav;base64,{t}" for t in texts]
+
+        def fake_post(url, payload, headers, timeout=None):
+            payload_obj = json.loads(payload.decode("utf-8"))
+            audio_url = payload_obj["messages"][1]["content"][0]["audio_url"]["url"]
+            index = texts.index(audio_url.split(",", 1)[1])
+            envelope = {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "language " + langs[index] + "<asr_text>" + texts[index],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+            return 200, json.dumps(envelope)
+
+        with mock.patch.object(qwen_remote_client, "perform_http_post", side_effect=fake_post):
+            result_texts, result_langs = transcribe_windows_meta(windows, CONFIG, batch_size=2)
+        self.assertEqual(result_texts, texts)
+        self.assertEqual(result_langs, ["fr", "en"])
+
     def test_three_windows_pool_two_all_transcribed_vad_order(self):
         # window texts flow back in REVERSE completion order (w0 slowest)
         texts = ["debut", "milieu", "fin"]

@@ -27,6 +27,7 @@ from qwen_remote_client import (  # noqa: E402
     QwenRemoteError,
     RemoteResponseParserError,
     parse_asr_content,
+    parse_asr_language,
     parse_response,
 )
 
@@ -114,9 +115,29 @@ class TestParseAsrContent(unittest.TestCase):
             self.assertTrue(str(caught.exception).startswith("QwenRemoteError: parse"))
 
 
+class TestParseAsrLanguage(unittest.TestCase):
+    """Server-detected language from the reply prefix (review finding P1-C)."""
+
+    def test_name_token_normalized_to_iso_code(self):
+        self.assertEqual(parse_asr_language("language French<asr_text>Bonjour"), "fr")
+        self.assertEqual(parse_asr_language("language English<asr_text>hi"), "en")
+        self.assertEqual(parse_asr_language("language German<asr_text>hallo"), "de")
+
+    def test_iso_code_token_passes_through(self):
+        self.assertEqual(parse_asr_language("language fr<asr_text>x"), "fr")
+
+    def test_language_none_marker_is_no_language(self):
+        self.assertIsNone(parse_asr_language("language None<asr_text>"))
+
+    def test_structured_output_has_no_language(self):
+        self.assertIsNone(parse_asr_language("Bonjour tu va bien"))
+
+    def test_missing_content_has_no_language(self):
+        self.assertIsNone(parse_asr_language(None))
+
+
 class TestParseResponseEnvelope(unittest.TestCase):
     def test_multi_choice_envelope_uses_first_choice(self):
-        body = _envelope("language French<asr_text>premier", n_choices=2)
         # second choice carries a DIFFERENT text to catch a zip over choices
         body["choices"][1]["message"]["content"] = "language French<asr_text>second"
         text = parse_response(200, json.dumps(body))
