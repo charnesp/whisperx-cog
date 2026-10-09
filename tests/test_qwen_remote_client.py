@@ -38,6 +38,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import qwen_remote  # noqa: E402,F401  (sibling module, group 2 — must exist)
+import qwen_remote_client  # noqa: E402
 from qwen_remote import QwenRemoteError  # noqa: E402
 
 CONFIG = {
@@ -466,6 +467,94 @@ class TestTranscribeWindowWorkflow(unittest.TestCase):
         with mock.patch("urllib.request.build_opener", return_value=opener):
             with self.assertRaises(self.module.RemoteResponseParserError):
                 self.module.transcribe_window("data:audio/wav;base64,QQ", CONFIG)
+
+
+class TestRemoteLogging(unittest.TestCase):
+    """One `qwen-remote:` record per remote transcription (review finding P1-F).
+
+    The docs promised this prefix but nothing emitted it. The record must
+    carry the remote HOST, the window count and the status, and must NEVER
+    carry the full URL, the port, the audio payload or the hotword content.
+    """
+
+    @staticmethod
+    def _serve(texts):
+        def fake_post(url, payload, headers, timeout=None):
+            payload_obj = json.loads(payload.decode("utf-8"))
+            audio_url = payload_obj["messages"][1]["content"][0]["audio_url"]["url"]
+            index = texts.index(audio_url.split(",", 1)[1])
+            envelope = {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "language French<asr_text>" + texts[index],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+            return 200, json.dumps(envelope)
+
+        return fake_post
+
+    def test_one_record_per_transcription_with_host_and_window_count(self):
+        texts = ["a", "b"]
+        windows = [f"data:audio/wav;base64,{t}" for t in texts]
+        with mock.patch.object(
+            qwen_remote_client, "perform_http_post", side_effect=self._serve(texts)
+        ):
+            with self.assertLogs("qwen_remote", level="INFO") as captured:
+                qwen_remote_client.transcribe_windows(
+                    windows, CONFIG, batch_size=2, context=HOTWORD_CONTEXT
+                )
+        records = [
+            r for r in captured.records if r.getMessage().startswith("qwen-remote:")
+        ]
+        self.assertEqual(len(records), 1, "exactly one qwen-remote: record per call")
+        message = records[0].getMessage()
+        self.assertIn("host=vllm.internal.invalid", message)
+        self.assertIn("windows=2", message)
+        self.assertIn("status=ok", message)
+        self.assertIn("duration_s=", message)
+        # never the full URL, the port, the audio payload or the hotword content
+        self.assertNotIn("chat/completions", message)
+        self.assertNotIn("9000", message)
+        self.assertNotIn("data:audio", message)
+        self.assertNotIn(HOTWORD_CONTEXT, message)
+
+    def test_failure_record_carries_status_failed(self):
+        windows = ["data:audio/wav;base64,x"]
+
+        def boom(url, payload, headers, timeout=None):
+            raise qwen_remote_client.RemoteHTTPStatusError(500, "engine error")
+
+        with mock.patch.object(qwen_remote_client, "perform_http_post", side_effect=boom):
+            with self.assertLogs("qwen_remote", level="INFO") as captured:
+                with self.assertRaises(QwenRemoteError):
+                    qwen_remote_client.transcribe_windows(windows, CONFIG, batch_size=1)
+        joined = "\n".join(
+            r.getMessage() for r in captured.records
+            if r.getMessage().startswith("qwen-remote:")
+        )
+        self.assertIn("status=failed", joined)
+        self.assertIn("windows=1", joined)
+
+    def test_log_host_never_carries_credentials(self):
+        """A URL with userinfo must log the host only, never the credentials."""
+        config = dict(CONFIG)
+        config["base_url"] = "http://user:" + "s3cr3t" + "@vllm.internal.invalid:9000/v1"
+        texts = ["a"]
+        windows = ["data:audio/wav;base64,a"]
+        with mock.patch.object(
+            qwen_remote_client, "perform_http_post", side_effect=self._serve(texts)
+        ):
+            with self.assertLogs("qwen_remote", level="INFO") as captured:
+                qwen_remote_client.transcribe_windows(windows, config, batch_size=1)
+        joined = "\n".join(r.getMessage() for r in captured.records)
+        self.assertIn("host=vllm.internal.invalid", joined)
+        self.assertNotIn("s3cr3t", joined)
+        self.assertNotIn("user:", joined)
 
 
 if __name__ == "__main__":
