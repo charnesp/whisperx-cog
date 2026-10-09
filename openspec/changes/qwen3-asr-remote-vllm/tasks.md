@@ -26,9 +26,9 @@
 
 ## 6. predict.py branching
 
-- [ ] 6.1 RED (GPU-free): with a mocked model layer — `QWEN_BACKEND=remote` routes the qwen transcription to the remote client and NEVER calls the local `asr_qwen` loader (loader mocked to count calls); `QWEN_BACKEND=local`/unset keeps the current in-process call (identity test on the untouched path); remote failure -> `QwenRemoteError:` typed message with category, no local fallback attempt; setup() fail-fast on broken remote config (test at predictor level); ForcedAligner+pyannote local stages called identically in both modes
-- [ ] 6.2 GREEN: minimal branching in `predict.py`; remote windows carry their LOCAL VAD start/end (server content never timestamps); `ENABLE_QWEN` gate stays bridge-only (no duplicate gate in cog); run `make -f Makefile.harness check`
-- [ ] 6.3 BLUE: extract shared helpers, remove duplication; full `check` green
+- [x] 6.1 RED (GPU-free): with a mocked model layer — `QWEN_BACKEND=remote` routes the qwen transcription to the remote client and NEVER calls the local `asr_qwen` loader (loader mocked to count calls); `QWEN_BACKEND=local`/unset keeps the current in-process call (identity test on the untouched path); remote failure -> `QwenRemoteError:` typed message with category, no local fallback attempt; setup() fail-fast on broken remote config (test at predictor level); ForcedAligner+pyannote local stages called identically in both modes
+- [x] 6.2 GREEN: minimal branching in `predict.py`; remote windows carry their LOCAL VAD start/end (server content never timestamps); `ENABLE_QWEN` gate stays bridge-only (no duplicate gate in cog); run `make -f Makefile.harness check`
+- [x] 6.3 BLUE: extract shared helpers, remove duplication; full `check` green
 
 ## 7. Regression
 

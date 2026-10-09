@@ -36,6 +36,9 @@ import time
 import torch
 import ffmpeg
 
+import qwen_remote
+import qwen_remote_client
+
 compute_type = "float16"  # change to "int8" if low on GPU mem (may reduce accuracy)
 device = "cuda"
 
@@ -188,6 +191,73 @@ def resolve_qwen_snapshot_dir(candidates=None) -> str:
     return resolve_model_dir(key)
 
 
+QWEN_SAMPLE_RATE = 16000
+QWEN_VAD_CHUNK_SIZE = 30  # seconds; same chunking as the local asr_qwen path
+
+
+def qwen_remote_windows(audio, vad_onset, vad_offset, chunk_size=QWEN_VAD_CHUNK_SIZE):
+    """Local client-side VAD chunking for the remote path.
+
+    Timestamps on the remote path come from THIS local VAD only (design
+    decision: the server never timestamps). Mirrors the local asr_qwen
+    chunking (pyannote preprocess_audio + merge_chunks, chunk_size=30) so
+    remote and local segment boundaries are produced identically. Returns a
+    list of (start, end, samples) in VAD order; ``samples`` is the raw
+    waveform slice for one window (posted as one remote request downstream).
+    """
+    import numpy as np
+
+    vads = importlib.import_module("whisperx.vads")
+    audio_np = np.asarray(audio, dtype=np.float32)
+    device_vad = "cpu" if device == "cpu" else device
+    vad_model = vads.Pyannote(
+        torch.device(device_vad),
+        token=None,
+        chunk_size=chunk_size,
+        vad_onset=vad_onset,
+        vad_offset=vad_offset,
+    )
+    waveform = vad_model.preprocess_audio(audio_np)
+    vad_segments = vad_model({"waveform": waveform, "sample_rate": QWEN_SAMPLE_RATE})
+    chunks = vad_model.merge_chunks(
+        vad_segments, chunk_size, onset=vad_onset, offset=vad_offset
+    )
+    windows = []
+    for chunk in chunks:
+        start = round(chunk["start"], 3)
+        end = round(chunk["end"], 3)
+        f1 = int(chunk["start"] * QWEN_SAMPLE_RATE)
+        f2 = int(chunk["end"] * QWEN_SAMPLE_RATE)
+        windows.append((start, end, audio_np[f1:f2]))
+    return windows
+
+
+def transcribe_qwen_remote(
+    audio, config, batch_size, language, context, vad_onset, vad_offset
+):
+    """Remote transcription of the local VAD windows (design decision 4).
+
+    Each window is posted by qwen_remote_client (bounded pool == clamped
+    batch_size, zero retries). ONE failed window raises a typed
+    QwenRemoteError and fails the whole prediction: NO local fallback. The
+    fused segments carry the LOCAL VAD start/end — the server reply text
+    never determines timestamps.
+    """
+    windows = qwen_remote_windows(audio, vad_onset, vad_offset)
+    texts = qwen_remote_client.transcribe_windows(
+        [window[2] for window in windows],
+        config,
+        batch_size=batch_size,
+        language=language,
+        context=context,
+    )
+    segments = [
+        {"text": text, "start": window[0], "end": window[1]}
+        for window, text in zip(windows, texts)
+    ]
+    return {"segments": segments, "language": language or "en"}
+
+
 def _resolve_input_default(val: Any) -> Any:
     """When predict() is called from Python (not via Cog API), omitted args get the Input()
     object (Pydantic FieldInfo) as value. Return the actual default in that case."""
@@ -207,6 +277,11 @@ class Output(BaseModel):
 
 class Predictor(BasePredictor):
     def setup(self):
+        # Fail-fast (design decision 9): resolve QWEN_BACKEND + remote
+        # config ONCE at boot; a broken remote config aborts setup
+        # before serving any request.
+        self._qwen_remote_config = qwen_remote.resolve_remote_config()
+
         destination_folder = "../root/.cache/torch"
         os.makedirs(destination_folder, exist_ok=True)
 
@@ -351,6 +426,16 @@ class Predictor(BasePredictor):
             if is_qwen:
                 assert_qwen_enabled()
 
+            qwen_remote_config = None
+            is_qwen_remote = False
+            if is_qwen:
+                qwen_remote_config = getattr(self, "_qwen_remote_config", None)
+                if qwen_remote_config is None:
+                    qwen_remote_config = qwen_remote.resolve_remote_config()
+                is_qwen_remote = (
+                    qwen_remote_config["backend"] == qwen_remote.BACKEND_REMOTE
+                )
+
             # Whisper-only resolution: resolve_whisper_model_path knows the
             # faster-whisper keys only (ENV_OVERRIDES / WHISPER_MODEL_HF_IDS),
             # so calling it on the qwen path raised KeyError 'qwen3-asr-1.7b'
@@ -419,21 +504,28 @@ class Predictor(BasePredictor):
             start_time = time.time_ns() / 1e9
 
             if is_qwen:
-                # Qwen3-ASR path: provisioned snapshot + explicit fp16 dtype
-                # (default fp32 measures ~10 GB VRAM vs ~5 GB fp16). The
-                # snapshot dir resolves from /models when provisioned, else
-                # the HF repo id (runtime download, legacy behavior).
-                qwen_snapshot_dir = resolve_qwen_snapshot_dir()
-                print(f"Qwen ASR source: {qwen_snapshot_dir}", flush=True)
-                asr_qwen_module = importlib.import_module("whisperx.asr_qwen")
                 language = qwen_effective_language(whisper_model, language)
-                model = asr_qwen_module.load_model(
-                    qwen_snapshot_dir,
-                    device,
-                    language=language,
-                    vad_options=vad_options,
-                    qwen_dtype="float16",
-                )
+                if is_qwen_remote:
+                    # Remote mode: the local qwen-ASR loader is NEVER
+                    # invoked (weights stay on disk); windows are posted
+                    # by qwen_remote_client below.
+                    model = None
+                else:
+                    # Qwen3-ASR path: provisioned snapshot + explicit fp16
+                    # dtype (default fp32 measures ~10 GB VRAM vs ~5 GB
+                    # fp16). The snapshot dir resolves from /models when
+                    # provisioned, else the HF repo id (runtime download,
+                    # legacy behavior).
+                    qwen_snapshot_dir = resolve_qwen_snapshot_dir()
+                    print(f"Qwen ASR source: {qwen_snapshot_dir}", flush=True)
+                    asr_qwen_module = importlib.import_module("whisperx.asr_qwen")
+                    model = asr_qwen_module.load_model(
+                        qwen_snapshot_dir,
+                        device,
+                        language=language,
+                        vad_options=vad_options,
+                        qwen_dtype="float16",
+                    )
             else:
                 model = whisperx.load_model(
                     whisper_arch,
@@ -461,11 +553,22 @@ class Predictor(BasePredictor):
             if is_qwen:
                 context, _truncated = format_qwen_context(hotwords)
                 effective_batch = resolve_qwen_batch_size(batch_size, provided=batch_size is not None)
-                result = model.transcribe(
-                    audio,
-                    batch_size=effective_batch,
-                    context=context,
-                )
+                if is_qwen_remote:
+                    result = transcribe_qwen_remote(
+                        audio,
+                        qwen_remote_config,
+                        effective_batch,
+                        language,
+                        context,
+                        vad_onset,
+                        vad_offset,
+                    )
+                else:
+                    result = model.transcribe(
+                        audio,
+                        batch_size=effective_batch,
+                        context=context,
+                    )
             else:
                 # Whisper path: batch_size None must resolve to the historical
                 # faster-whisper default 64. The E3 bridge change (batch_size

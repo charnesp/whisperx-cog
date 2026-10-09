@@ -70,7 +70,15 @@ EXPECTED_SEGMENTS = [
     {"text": "le monde", "start": 2.5, "end": 4.0},
 ]
 
-ASR_QWEN_STUB = sys.modules["whisperx.asr_qwen"]
+def _asr_qwen_stub():
+    """Resolve the asr_qwen stub module at CALL time.
+
+    Other test modules re-register ``sys.modules["whisperx.asr_qwen"]`` during
+    collection; predict.py imports it lazily, so the live sys.modules entry is
+    the one predict actually sees. A module-level capture goes stale under
+    ``unittest discover`` and silently misses the patch.
+    """
+    return sys.modules["whisperx.asr_qwen"]
 
 QWEN_ARGS = dict(
     audio_file="clip.wav",
@@ -132,7 +140,7 @@ class TestRemoteRouting(_RemoteBranchBase):
         fake_model = types.SimpleNamespace(
             transcribe=lambda *a, **k: _local_result()
         )
-        with mock.patch.object(ASR_QWEN_STUB, "load_model", return_value=fake_model) as load_model, \
+        with mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model) as load_model, \
                 mock.patch.object(predict, "align_qwen", side_effect=lambda a, r, d: r), \
                 mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
                 mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
@@ -159,7 +167,7 @@ class TestRemoteRouting(_RemoteBranchBase):
     def test_remote_error_propagates_typed_without_local_fallback(self):
         err = QwenRemoteError("QwenRemoteError: connection - cannot reach the remote engine")
         fake_model = types.SimpleNamespace(transcribe=lambda *a, **k: _local_result())
-        with mock.patch.object(ASR_QWEN_STUB, "load_model", return_value=fake_model) as load_model, \
+        with mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model) as load_model, \
                 mock.patch.object(predict, "align_qwen", side_effect=lambda a, r, d: r), \
                 mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
                 mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
@@ -188,7 +196,7 @@ class TestLocalPathIdentity(_RemoteBranchBase):
             return _local_result()
 
         fake_model = types.SimpleNamespace(transcribe=_transcribe)
-        with mock.patch.object(ASR_QWEN_STUB, "load_model", return_value=fake_model) as load_model, \
+        with mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model) as load_model, \
                 mock.patch.object(predict, "align_qwen", side_effect=lambda a, r, d: r), \
                 mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
                 mock.patch.object(predict.qwen_remote_client, "transcribe_windows") as tw:
@@ -240,7 +248,7 @@ class TestAlignmentAndDiarizationParity(_RemoteBranchBase):
         align = mock.Mock(side_effect=lambda a, r, d: r)
         diar = mock.Mock(side_effect=lambda *a, **k: a[1])
         fake_model = types.SimpleNamespace(transcribe=lambda *a, **k: _local_result())
-        with mock.patch.object(ASR_QWEN_STUB, "load_model", return_value=fake_model), \
+        with mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model), \
                 mock.patch.object(predict, "align_qwen", align), \
                 mock.patch.object(predict, "diarize", diar), \
                 mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
@@ -278,7 +286,7 @@ class TestEnableQwenStaysBridgeOnly(_RemoteBranchBase):
             transcribe=lambda *a, **k: _local_result()
         )
         with mock.patch.object(predict, "assert_qwen_enabled", gate), \
-                mock.patch.object(ASR_QWEN_STUB, "load_model", return_value=fake_model), \
+                mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model), \
                 mock.patch.object(predict, "align_qwen", side_effect=lambda a, r, d: r), \
                 mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]), \
                 mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)), \
@@ -295,7 +303,7 @@ class TestEnableQwenStaysBridgeOnly(_RemoteBranchBase):
         with mock.patch.dict(os.environ, {"ENABLE_QWEN": "0"}, clear=False), \
                 mock.patch.object(predict, "qwen_remote_windows") as windows, \
                 mock.patch.object(predict.qwen_remote_client, "transcribe_windows") as tw, \
-                mock.patch.object(ASR_QWEN_STUB, "load_model") as load_model:
+                mock.patch.object(_asr_qwen_stub(), "load_model") as load_model:
             self._stack(self._common_patches())
             predictor = self._predictor(REMOTE_CONFIG)
             with self.assertRaises(RuntimeError) as ctx:
