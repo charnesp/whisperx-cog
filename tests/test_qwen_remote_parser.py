@@ -85,6 +85,21 @@ class TestParseAsrContent(unittest.TestCase):
             "Language models are useful",
         )
 
+    def test_lowercase_language_word_in_structured_output_is_kept(self):
+        """Structured output that merely STARTS with the word 'language' plus a
+        non-language token is not the server prefix grammar (confirmation
+        review reserve: 'language models are useful' was rejected as parse)."""
+        self.assertEqual(
+            parse_asr_content("language models are useful in production"),
+            "language models are useful in production",
+        )
+
+    def test_single_language_word_still_rejected_without_marker(self):
+        """The real prefix shape (language + known language name, no marker)
+        must still fail explicitly: the narrow fix must not lose P1-A."""
+        with self.assertRaises(RemoteResponseParserError):
+            parse_asr_content("language German hallo welt")
+
     def test_language_none_marker_yields_empty_segment(self):
         self.assertEqual(parse_asr_content("language None<asr_text>"), "")
 
