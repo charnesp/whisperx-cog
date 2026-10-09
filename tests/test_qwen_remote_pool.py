@@ -46,6 +46,8 @@ CONFIG = {
     "timeout_s": 30,
 }
 
+HOTWORD_CONTEXT = "TEST-HOTWORD-SIGNAL"
+
 
 class _CountingExecutor:
     """ThreadPoolExecutor double recording max_workers + cancellation."""
@@ -144,10 +146,23 @@ class TestClampRemotePoolSize(unittest.TestCase):
         self.assertEqual(clamp_remote_pool_size(0), 4)
         self.assertEqual(clamp_remote_pool_size(-3), 4)
 
-    def test_non_integer_rejected_to_default(self):
+    def test_non_integer_and_float_mirror_predict(self):
+        # Faithful mirror of predict.resolve_qwen_batch_size (shared resolver,
+        # review P2): a non-integer string -> default, a float is int()-truncated
+        # (2.5 -> 2) and a bool is an int (True -> 1), exactly as the local path.
         self.assertEqual(clamp_remote_pool_size("six"), 4)
-        self.assertEqual(clamp_remote_pool_size(2.5), 4)
-        self.assertEqual(clamp_remote_pool_size(True), 4)
+        self.assertEqual(clamp_remote_pool_size(2.5), 2)
+        self.assertEqual(clamp_remote_pool_size(True), 1)
+
+    def test_clamp_delegates_to_the_shared_resolver(self):
+        import qwen_remote as shared
+
+        for value in (None, 0, -3, "six", 2.5, True, 2, 8, 32, "6"):
+            self.assertEqual(
+                clamp_remote_pool_size(value),
+                shared.resolve_batch_size(value, 4, 8),
+                value,
+            )
 
 
 class TestPoolOrderAndCompletion(unittest.TestCase):
@@ -214,9 +229,14 @@ class TestPoolOrderAndCompletion(unittest.TestCase):
 
         windows = [f"data:audio/wav;base64,{t}" for t in texts]
         with mock.patch.object(qwen_remote_client, "perform_http_post", side_effect=fake_post):
-            result = transcribe_windows(windows, CONFIG, batch_size=2)
+            result = transcribe_windows(windows, CONFIG, batch_size=2, context=HOTWORD_CONTEXT)
         self.assertEqual(result, texts)  # VAD/input order, not completion order
         self.assertEqual(len(calls), 3)
+        # Context/hotwords must ride on EVERY request of a multi-window batch
+        # (spec openai-stt-api: "Context travels with every request", review P2).
+        for payload in calls:
+            self.assertEqual(payload["messages"][0]["role"], "system")
+            self.assertIn(HOTWORD_CONTEXT, payload["messages"][0]["content"])
 
     def test_reverse_completion_still_vad_order(self):
         """Slow FIRST window: futures complete w2,w1,w0 — fused order stays 0,1,2."""

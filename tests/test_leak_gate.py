@@ -184,5 +184,37 @@ class TestLeakGateSabotageProof(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("userinfo", out)
 
+    def test_single_label_service_hostport_caught(self):
+        # A bare service-name:port (no dot, no URL scheme) is still an address
+        # leak (review P2): the remote engine label must be caught. Assembled
+        # at runtime so this file itself never carries the literal.
+        svc = "vllm" + "-asr"
+        port = "8" + "000"
+        root = _make_tree([
+            ("compose/x.yaml", "engine: " + svc + ":" + port + "\n"),
+        ])
+        rc, out = _run_gate(root)
+        self.assertEqual(rc, 1, "single-label host:port not caught: %s" % out[-2000:])
+        self.assertIn(svc + ":" + port, out)
+
+    def test_internal_service_labels_not_flagged(self):
+        # Generic compose/k8s service labels (`cog:5000`) are not personal
+        # addresses and must never flag (the docs use them in diagrams).
+        root = _make_tree([
+            ("docs/ARCHITECTURE.md", "labels = ['cog:5000', 'bridge:8080', 'redis:6379']\n"),
+        ])
+        rc, out = _run_gate(root)
+        self.assertEqual(rc, 0, "internal service labels flagged: %s" % out[-2000:])
+
+    def test_env_example_suffix_is_scanned(self):
+        # `.env.example` carries env docs and must be scanned like any text
+        # file (its `.example` suffix was previously skipped, review P2).
+        root = _make_tree([
+            (".env.example", "QWEN_REMOTE_BASE_URL=http://" + IP_PRIVATE + ":9000/v1\n"),
+        ])
+        rc, out = _run_gate(root)
+        self.assertEqual(rc, 1, ".env.example not scanned: %s" % out[-2000:])
+        self.assertIn(IP_PRIVATE, out)
+
 if __name__ == "__main__":
     unittest.main()

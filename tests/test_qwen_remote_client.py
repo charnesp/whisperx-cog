@@ -181,7 +181,6 @@ class TestModuleContract(unittest.TestCase):
 
         self.assertTrue(issubclass(module.QwenRemoteError, QwenRemoteError))
         for cls in (
-            module.RemoteConfigError,
             module.RemoteConnectionError,
             module.RemoteTimeoutError,
             module.RemoteHTTPStatusError,
@@ -195,7 +194,6 @@ class TestModuleContract(unittest.TestCase):
         for cls, message in (
             (module.RemoteConnectionError, "boom"),
             (module.RemoteTimeoutError, "no answer"),
-            (module.RemoteConfigError, "bad config"),
         ):
             instance = cls(message)
             text = str(instance)
@@ -417,6 +415,29 @@ class TestPerformHttpPostEntrypoint(unittest.TestCase):
                     CONFIG["chat_url"], payload=b"{}", headers={"Content-Type": "application/json"}, timeout=None
                 )
         self.assertIn("timeout", str(caught.exception))
+
+    def test_transport_message_never_leaks_url_credentials(self):
+        """A socket reason embedding the URL must not leak userinfo/password.
+
+        Review finding P2: the connection/timeout messages interpolated the raw
+        reason, which can carry the configured URL (credentials in userinfo).
+        """
+        url = "http://user:" + "s3cr3t" + "@vllm.internal.invalid:9000/v1/chat/completions"
+        reason = "cannot connect to " + url
+
+        class BoomOpener:
+            def open(self, request, timeout=None):
+                raise urllib.error.URLError(reason)
+
+        with mock.patch("urllib.request.build_opener", return_value=BoomOpener()):
+            with self.assertRaises(self.module.RemoteConnectionError) as caught:
+                self.module.perform_http_post(
+                    url, payload=b"{}", headers={"Content-Type": "application/json"}, timeout=None
+                )
+        message = str(caught.exception)
+        self.assertNotIn("s3cr3t", message)
+        self.assertNotIn(url, message)
+        self.assertIn("remote engine", message)
 
 
 class TestTranscribeWindowWorkflow(unittest.TestCase):

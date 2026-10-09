@@ -97,7 +97,10 @@ class TestK8sWiring(unittest.TestCase):
 
     def test_k8s_backend_and_timeout_have_safe_defaults(self):
         env = {entry.get("name"): entry.get("value") for entry in _k8s_whisperx_env()}
-        self.assertEqual(env.get("QWEN_BACKEND"), "local")
+        # QWEN_BACKEND is a deploy-time placeholder like URL/model: empty resolves
+        # to the code default 'local' (never hard-coded in the manifest, so the
+        # k8s and compose (${QWEN_BACKEND:-local}) contracts stay identical).
+        self.assertEqual(env.get("QWEN_BACKEND"), "")
         self.assertEqual(env.get("QWEN_REMOTE_TIMEOUT_S"), "300")
 
 
