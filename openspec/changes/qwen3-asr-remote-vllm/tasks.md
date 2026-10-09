@@ -36,8 +36,8 @@
 
 ## 8. Compose + k8s env wiring
 
-- [ ] 8.1 RED: config-shape test — compose/k8s carry the four env entries (`QWEN_BACKEND`, `QWEN_REMOTE_BASE_URL`, `QWEN_REMOTE_MODEL`, `QWEN_REMOTE_TIMEOUT_S`) with NO concrete host/model value in the files (deploy-time injection), bridge sync check stays green
-- [ ] 8.2 GREEN: add env entries to docker-compose.yml + k8s/whisperx-stack.yaml; `make -f Makefile.harness smoke` green
+- [x] 8.1 RED: config-shape test — compose/k8s carry the four env entries (`QWEN_BACKEND`, `QWEN_REMOTE_BASE_URL`, `QWEN_REMOTE_MODEL`, `QWEN_REMOTE_TIMEOUT_S`) with NO concrete host/model value in the files (deploy-time injection), bridge sync check stays green
+- [x] 8.2 GREEN: add env entries to docker-compose.yml + k8s/whisperx-stack.yaml; `make -f Makefile.harness smoke` green
 
 ## 9. Docs (same cycle, docs-coverage-is-done)
 
