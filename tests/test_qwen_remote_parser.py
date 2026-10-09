@@ -138,6 +138,7 @@ class TestParseAsrLanguage(unittest.TestCase):
 
 class TestParseResponseEnvelope(unittest.TestCase):
     def test_multi_choice_envelope_uses_first_choice(self):
+        body = _envelope("language French<asr_text>premier", n_choices=2)
         # second choice carries a DIFFERENT text to catch a zip over choices
         body["choices"][1]["message"]["content"] = "language French<asr_text>second"
         text = parse_response(200, json.dumps(body))

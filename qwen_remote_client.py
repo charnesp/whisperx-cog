@@ -52,6 +52,37 @@ _ASR_PREFIX = "<asr_text>"
 # Lowercase on purpose: a normal sentence starting with the capitalised word
 # "Language" is structured output, not the model's prefix.
 _LANGUAGE_PREFIX = re.compile(r"^language\s+([A-Za-z][A-Za-z0-9_-]*)")
+# Qwen3-ASR emits a language NAME in the reply prefix (`language French<asr_text>`)
+# while the local path reports the ISO code (`fr`). Normalise to the local
+# contract so remote/local results are comparable. Standard Whisper language set.
+_LANGUAGE_NAME_TO_ISO = {
+    "afrikaans": "af", "amharic": "am", "arabic": "ar", "assamese": "as",
+    "azerbaijani": "az", "bashkir": "ba", "belarusian": "be", "bulgarian": "bg",
+    "bengali": "bn", "tibetan": "bo", "breton": "br", "bosnian": "bs",
+    "catalan": "ca", "czech": "cs", "welsh": "cy", "danish": "da",
+    "german": "de", "greek": "el", "english": "en", "spanish": "es",
+    "estonian": "et", "basque": "eu", "persian": "fa", "finnish": "fi",
+    "faroese": "fo", "french": "fr", "galician": "gl", "gujarati": "gu",
+    "hausa": "ha", "hawaiian": "haw", "hebrew": "he", "hindi": "hi",
+    "croatian": "hr", "haitian creole": "ht", "hungarian": "hu",
+    "armenian": "hy", "indonesian": "id", "icelandic": "is", "italian": "it",
+    "japanese": "ja", "javanese": "jw", "georgian": "ka", "kazakh": "kk",
+    "khmer": "km", "kannada": "kn", "korean": "ko", "latin": "la",
+    "luxembourgish": "lb", "lingala": "ln", "lao": "lo", "lithuanian": "lt",
+    "latvian": "lv", "malagasy": "mg", "maori": "mi", "macedonian": "mk",
+    "malayalam": "ml", "mongolian": "mn", "marathi": "mr", "malay": "ms",
+    "maltese": "mt", "myanmar": "my", "nepali": "ne", "dutch": "nl",
+    "nynorsk": "nn", "norwegian": "no", "occitan": "oc", "punjabi": "pa",
+    "polish": "pl", "pashto": "ps", "portuguese": "pt", "romanian": "ro",
+    "russian": "ru", "sanskrit": "sa", "sindhi": "sd", "sinhala": "si",
+    "slovak": "sk", "slovenian": "sl", "shona": "sn", "somali": "so",
+    "albanian": "sq", "serbian": "sr", "sundanese": "su", "swedish": "sv",
+    "swahili": "sw", "tamil": "ta", "telugu": "te", "tajik": "tg",
+    "thai": "th", "turkmen": "tk", "tagalog": "tl", "turkish": "tr",
+    "tatar": "tt", "ukrainian": "uk", "urdu": "ur", "uzbek": "uz",
+    "vietnamese": "vi", "yiddish": "yi", "yoruba": "yo", "chinese": "zh",
+    "cantonese": "yue",
+}
 HTTP_STATUS_OK = 200
 _ERROR_BODY_SNIPPET_BYTES = 96  # truncate upstream bodies in error messages
 
@@ -288,8 +319,49 @@ def parse_asr_content(content, finish_reason=None) -> str:
     return after  # language None / silence -> "" (valid empty segment)
 
 
+def normalize_language_code(token):
+    """Server prefix language token -> ISO code (None for 'None'/empty).
+
+    Qwen3-ASR emits a language NAME (e.g. `language French<asr_text>...`) while
+    the local path reports the ISO code (e.g. `fr`): normalise to the local
+    contract. A token that already looks like an ISO code passes through
+    lower-cased; an unknown name yields None (no made-up code).
+    """
+    if token is None:
+        return None
+    text = str(token).strip()
+    if not text or text.lower() == "none":
+        return None
+    lowered = text.lower()
+    if lowered in _LANGUAGE_NAME_TO_ISO:
+        return _LANGUAGE_NAME_TO_ISO[lowered]
+    if 2 <= len(text) <= 3 and text.isalpha():
+        return lowered
+    return None
+
+
+def parse_asr_language(content):
+    """Server-detected language from a reply content, normalised to ISO.
+
+    Returns None when the reply carries no `language X` prefix (structured
+    output), a `language None` marker, or a token we cannot map. Lenient by
+    design: text extraction/validation is `parse_asr_content`'s job.
+    """
+    if content is None:
+        return None
+    match = _LANGUAGE_PREFIX.match(str(content).lstrip())
+    if not match:
+        return None
+    return normalize_language_code(match.group(1))
+
+
 def parse_response(status: int, body: str) -> str:
     """vLLM 0.30.0 chat.completion envelope -> transcribed text of choice[0]."""
+    return parse_response_meta(status, body)[0]
+
+
+def parse_response_meta(status: int, body: str):
+    """Like `parse_response` but also returns the detected ISO language."""
     if status != HTTP_STATUS_OK:
         raise RemoteHTTPStatusError(status, body[:_ERROR_BODY_SNIPPET_BYTES])
     try:
@@ -306,18 +378,25 @@ def parse_response(status: int, body: str) -> str:
     choice = choices[0]
     finish_reason = choice.get("finish_reason")
     message = choice.get("message") or {}
-    return parse_asr_content(message.get("content"), finish_reason=finish_reason)
+    content = message.get("content")
+    text = parse_asr_content(content, finish_reason=finish_reason)
+    return text, parse_asr_language(content)
 
 
 # --- one window -------------------------------------------------------------
 def transcribe_window(audio_url, config: dict, language=None, context=None) -> str:
     """ONE window -> ONE POST -> parsed text (G3 workflow, GET-safe)."""
+    return transcribe_window_meta(audio_url, config, language=language, context=context)[0]
+
+
+def transcribe_window_meta(audio_url, config: dict, language=None, context=None):
+    """ONE window -> ONE POST -> (parsed text, detected ISO language)."""
     payload = build_chat_payload(_audio_url(audio_url), config["model"], language=language, context=context)
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     status, text = perform_http_post(
         config["chat_url"], body, {"Content-Type": "application/json"}, config.get("timeout_s")
     )
-    return parse_response(status, text)
+    return parse_response_meta(status, text)
 
 
 def clamp_remote_pool_size(requested, fallback: int = 4, cap: int = 8) -> int:
@@ -350,41 +429,71 @@ def transcribe_windows(
 ):
     """All windows -> all texts, in INPUT (VAD) order, zero retries.
 
+    Backwards-compatible view over `transcribe_windows_meta` (texts only).
+    """
+    texts, _languages = transcribe_windows_meta(
+        windows,
+        config,
+        batch_size=batch_size,
+        language=language,
+        context=context,
+        executor=executor,
+    )
+    return texts
+
+
+def transcribe_windows_meta(
+    windows,
+    config: dict,
+    batch_size=None,
+    language=None,
+    context=None,
+    executor: Callable[..., ThreadPoolExecutor] | None = None,
+):
+    """All windows -> (texts, detected ISO languages), in INPUT (VAD) order.
+
     Concurrency == clamped batch_size (predict clamp semantics: default 4,
     cap 8, <=0/invalid -> default). ONE failed window fails the WHOLE
     prediction with its typed error: pending futures are cancelled
     (cancel_futures=True), in-flight results discarded, no partial fused
-    output, no retry, no local fallback.
+    output, no retry, no local fallback. The executor is shut down EXPLICITLY
+    (never via a `with` block, whose __exit__ would re-run shutdown(wait=True)
+    and undo the cancellation the typed error is meant to honour).
     """
     if not windows:
-        return []
+        return [], []
     worker_count = clamp_remote_pool_size(batch_size)
     texts: list = [None] * len(windows)
+    languages: list = [None] * len(windows)
     pool_executor = executor or ThreadPoolExecutor
-    with pool_executor(max_workers=worker_count) as pool:
+    pool = pool_executor(max_workers=worker_count)
+    failed = False
+    try:
         future_to_index = {
             pool.submit(
-                transcribe_window, window, config, language=language, context=context
+                transcribe_window_meta, window, config, language=language, context=context
             ): index
             for index, window in enumerate(windows)
         }
-        try:
-            for future in as_completed(future_to_index):
-                index = future_to_index[future]
-                try:
-                    texts[index] = future.result()
-                except QwenRemoteError:
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    raise
-                except Exception as exc:  # unexpected: wrap typed, same policy
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    raise RemoteConnectionError(
-                        f"unexpected failure on window #{index}: {exc}"
-                    ) from exc
-        finally:
-            pass  # `with` closes the pool; cancel_futures already honored
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                texts[index], languages[index] = future.result()
+            except QwenRemoteError:
+                failed = True
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            except Exception as exc:  # unexpected: wrap typed, same policy
+                failed = True
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise RemoteConnectionError(
+                    f"unexpected failure on window #{index}: {exc}"
+                ) from exc
+    finally:
+        if not failed:
+            pool.shutdown(wait=True)
     if any(t is None for t in texts):
         raise RemoteConnectionError(
             "a window produced no result (executor shutdown raced)"
         )
-    return texts
+    return texts, languages

@@ -232,6 +232,22 @@ def qwen_remote_windows(audio, vad_onset, vad_offset, chunk_size=QWEN_VAD_CHUNK_
     return windows
 
 
+def _remote_result_language(forced_language, window_languages):
+    """Resolved language for the remote path (local-path parity).
+
+    A client-forced language wins. Otherwise the language detected by the
+    remote engine (first window carrying one, VAD order) is used — the local
+    qwen path reports the engine-detected language, so the remote path must
+    too. 'en' is a last-resort fallback ONLY when no language is available.
+    """
+    if forced_language:
+        return forced_language
+    for lang in window_languages or ():
+        if lang:
+            return lang
+    return "en"
+
+
 def transcribe_qwen_remote(
     audio, config, batch_size, language, context, vad_onset, vad_offset
 ):
@@ -241,10 +257,11 @@ def transcribe_qwen_remote(
     batch_size, zero retries). ONE failed window raises a typed
     QwenRemoteError and fails the whole prediction: NO local fallback. The
     fused segments carry the LOCAL VAD start/end — the server reply text
-    never determines timestamps.
+    never determines timestamps. The server-detected language (reply prefix)
+    drives `language` when the caller passed none.
     """
     windows = qwen_remote_windows(audio, vad_onset, vad_offset)
-    texts = qwen_remote_client.transcribe_windows(
+    texts, languages = qwen_remote_client.transcribe_windows_meta(
         [window[2] for window in windows],
         config,
         batch_size=batch_size,
@@ -255,7 +272,10 @@ def transcribe_qwen_remote(
         {"text": text, "start": window[0], "end": window[1]}
         for window, text in zip(windows, texts)
     ]
-    return {"segments": segments, "language": language or "en"}
+    return {
+        "segments": segments,
+        "language": _remote_result_language(language, languages),
+    }
 
 
 def _resolve_input_default(val: Any) -> Any:
