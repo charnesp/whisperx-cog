@@ -35,10 +35,15 @@ lint:
 ## set is the pinned subset; unpinned lines (ffmpeg-python, soundfile, librosa)
 ## are audited at their latest resolved version. New CVEs fail the gate; triage
 ## with PKG_AUDIT_IGNORE="<ID ID>" (e.g. a CVE whose fix is not yet compatible).
+##
+## 2026-10-09 triage: transformers 4.57.6 PYSEC-2026-4174 — the dependency is
+## frozen (transformers pinned for the qwen_asr 0.0.6 wheel API) and no
+## compatible fix exists (the fix ships in transformers 5.x, unsupported by
+## qwen_asr 0.0.6). Accepted until the next dependency refreeze.
 pkg-audit:
 	@command -v $(PIP_AUDIT) >/dev/null 2>&1 || { \
 		echo "FAIL pkg-audit: $(PIP_AUDIT) not on PATH — install it first (uv tool install pip-audit)"; exit 1; }
-	@PKG_AUDIT_BIN=$(PIP_AUDIT) PKG_AUDIT_IGNORE="$$PKG_AUDIT_IGNORE PYSEC-2025-217 PYSEC-2026-2288 PYSEC-2026-2289 PYSEC-2026-2290 PYSEC-2026-3929" $(PYTHON) scripts/pkg_audit.py
+	@PKG_AUDIT_BIN=$(PIP_AUDIT) PKG_AUDIT_IGNORE="$$PKG_AUDIT_IGNORE PYSEC-2025-217 PYSEC-2026-2288 PYSEC-2026-2289 PYSEC-2026-2290 PYSEC-2026-3929 PYSEC-2026-4174" $(PYTHON) scripts/pkg_audit.py
 
 ## Full harness gate (CI)
 ci: check lint pkg-audit
