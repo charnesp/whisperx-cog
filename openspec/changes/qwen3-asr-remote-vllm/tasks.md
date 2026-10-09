@@ -41,8 +41,8 @@
 
 ## 9. Docs (same cycle, docs-coverage-is-done)
 
-- [ ] 9.1 README.md (env table + remote mode usage, placeholder examples), ARCHITECTURE.md, DATA_CONTRACTS.md (request/response shapes + `QwenRemoteError:` taxonomy), BRIDGE.md (contract unchanged note; kill-switch bridge-only), OBSERVABILITY.md (`qwen-remote:` prefix, log contents: redacted host, window count, durations, status), PLANS.md
-- [ ] 9.2 No personal IP/port/model name in any doc; leak gate covered docs too (group 1)
+- [x] 9.1 README.md (env table + remote mode usage, placeholder examples), ARCHITECTURE.md, DATA_CONTRACTS.md (request/response shapes + `QwenRemoteError:` taxonomy), BRIDGE.md (contract unchanged note; kill-switch bridge-only), OBSERVABILITY.md (`qwen-remote:` prefix, log contents: host, window count, durations, status), PLANS.md
+- [x] 9.2 No personal IP/port/model name in any doc; leak gate covered docs too (group 1)
 
 ## 10. GPU smoke (manual, canary pre-merge — operator criteria)
 

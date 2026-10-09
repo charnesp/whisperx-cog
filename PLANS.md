@@ -7,6 +7,7 @@ Execution plans and tech-debt tracker for agent-first work. Architecture: [docs/
 | Item | Scope | Acceptance |
 |------|-------|------------|
 | `openai-diarized-json-endpoint` | OpenAI `diarized_json` + `gpt-4o-transcribe-diarize` on bridge | See `openspec/changes/openai-diarized-json-endpoint/` |
+| `qwen3-asr-remote-vllm` | Remote qwen3-asr backend: env-selected HTTP delegation to an external OpenAI-compatible engine; local path and faster-whisper path unchanged | See `openspec/changes/qwen3-asr-remote-vllm/`; GPU smoke (task 10) is the pre-merge gate |
 
 ## Completed
 

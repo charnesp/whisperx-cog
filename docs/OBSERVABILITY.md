@@ -53,6 +53,18 @@ Out of range float values are not JSON compliant: nan
 
 → output contained NaN before sanitization fix; verify `sanitize_for_json` runs on all return paths.
 
+### Remote qwen3-asr logs (`qwen-remote:`)
+
+When `QWEN_BACKEND=remote`, the whisperx container logs the remote path under the **`qwen-remote:`** prefix: the remote **host**, the **window count**, per-batch **durations**, and the **status**. Audio payloads and hotword content are **never** logged (the same no-content rule as the local qwen context path). Remote failures additionally carry the typed `QwenRemoteError:` category (`config`/`connection`/`timeout`/`http_status`/`parse` — see [DATA_CONTRACTS.md](./DATA_CONTRACTS.md)).
+
+```bash
+# Remote qwen3-asr activity
+docker compose logs whisperx 2>&1 | grep 'qwen-remote:'
+kubectl logs <pod> -c whisperx | grep 'qwen-remote:'
+```
+
+`<pod>` is any pod carrying the `app: whisperx` label.
+
 ## Metrics
 
 No Prometheus/OpenTelemetry in this repo today. Operational signals:
