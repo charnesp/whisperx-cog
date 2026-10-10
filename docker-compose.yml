@@ -49,6 +49,10 @@ services:
         condition: service_started
     environment:
       HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}
+      QWEN_BACKEND: ${QWEN_BACKEND:-local}
+      QWEN_REMOTE_BASE_URL: ${QWEN_REMOTE_BASE_URL:-}
+      QWEN_REMOTE_MODEL: ${QWEN_REMOTE_MODEL:-}
+      QWEN_REMOTE_TIMEOUT_S: ${QWEN_REMOTE_TIMEOUT_S:-300}
     gpus: all
     deploy:
       resources:

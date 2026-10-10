@@ -99,6 +99,8 @@ Fixed Cog input on this path: `align_output: true`. Non-diarize requests set `di
 
 `model=qwen3-asr` is **gated at the bridge**: when the backend is disabled, the bridge refuses the request with HTTP 400 (`invalid_request_error`, message `qwen3-asr backend is disabled (ENABLE_QWEN)`) instead of forwarding a request that would fail with a Cog-side 500. `predict.py` keeps its own `qwen_enabled()` gate as defense in depth.
 
+The `qwen3-asr-remote-vllm` change does **not modify this contract**: the kill-switch is enforced at the **bridge**, read at request time, and is independent of `QWEN_BACKEND` — it rejects `model=qwen3-asr` identically whether cog runs the qwen backend in-process (`local`) or delegates it to a remote engine over HTTP (`remote`). The remote backend adds no second gate in cog. The request/response contract on this path is unchanged; see [DATA_CONTRACTS.md](./DATA_CONTRACTS.md) for the remote-engine shapes internal to cog.
+
 | `ENABLE_QWEN` (bridge env, read at request time — toggle without redeploy) | Behavior for `model=qwen3-asr` |
 |---|---|
 | unset (default) | **Enabled** — same default as `predict.qwen_enabled()` |

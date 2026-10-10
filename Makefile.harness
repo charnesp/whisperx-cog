@@ -19,6 +19,7 @@ smoke:
 
 ## smoke + unit tests
 check: smoke
+	$(PYTHON) scripts/leak_gate.py .
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py' -q
 
 ## Lint (ruff). Install once: uv tool install ruff (or pip install ruff).
