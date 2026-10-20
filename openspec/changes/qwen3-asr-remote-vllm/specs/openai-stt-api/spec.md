@@ -40,7 +40,7 @@ The remote base URL SHALL come exclusively from `QWEN_REMOTE_BASE_URL`; the remo
 
 ### Requirement: Remote request contract
 
-Each VAD window SHALL be transcribed by one multimodal chat completion request to `{QWEN_REMOTE_BASE_URL}/chat/completions` with `model=QWEN_REMOTE_MODEL`, `temperature=0`, a bounded `max_tokens`, audio as a `data:audio/wav;base64` URI (mono 16 kHz PCM16 wav) in `audio_url`, and the `context` system message (formatted hotwords) in EVERY request. The client SHALL never request server-side timestamps (no `verbose_json`, no `timestamp_granularities`). Window concurrency SHALL be bounded by the clamped batch_size (default 4, cap 8, values <=0 or non-integer rejected by the existing clamp helper), and results SHALL be fused in VAD window order. The `language` param, when provided, SHALL be carried as a system-message instruction.
+Each quiet-point window SHALL be transcribed by one multimodal chat completion request to `{QWEN_REMOTE_BASE_URL}/chat/completions` with `model=QWEN_REMOTE_MODEL`, `temperature=0`, NO `max_tokens` field at all (operator decision 2026-10-20: a 30 s window emits 109-137 tokens, so any ceiling truncates real transcriptions), audio as a `data:audio/wav;base64` URI (mono 16 kHz PCM16 wav) in `audio_url`, and the `context` system message (formatted hotwords) in EVERY request. Windows SHALL be produced by quiet-point chunking (max 30 s, cut on the quietest point of the last 1 s, RMS energy over 1600-sample frames, full coverage without overlap, absolute offsets in seconds); the remote path SHALL NOT load a pyannote VAD model. The client SHALL never request server-side timestamps (no `verbose_json`, no `timestamp_granularities`). Window concurrency SHALL be bounded by the clamped batch_size (default 4, cap 8, values <=0 or non-integer rejected by the existing clamp helper), and results SHALL be fused in window order. The `language` param, when provided, SHALL be carried as a system-message instruction, and the `context` system message SHALL be the only hotword channel (the engine's transcription route neither honours `hotwords` nor `prompt`).
 
 #### Scenario: Context travels with every request
 
@@ -60,7 +60,7 @@ Each VAD window SHALL be transcribed by one multimodal chat completion request t
 #### Scenario: Order preserved under concurrency
 
 - **WHEN** 3 windows (start values 0.0, 30.0, 60.0) are transcribed with a pool of 2
-- **THEN** the fused result segments are ordered by VAD window start regardless of completion order
+- **THEN** the fused result segments are ordered by window start regardless of completion order
 
 ### Requirement: Remote response parsing
 
@@ -69,7 +69,7 @@ The reply content SHALL be parsed to text only: a `language X<asr_text>text` bod
 #### Scenario: Prefixed reply parsed
 
 - **WHEN** the reply content is `language French<asr_text>Bonjour tu va bien`
-- **THEN** the segment text is `Bonjour tu va bien` and the segment start/end remain the VAD window values
+- **THEN** the segment text is `Bonjour tu va bien` and the segment start/end remain the local window values
 
 #### Scenario: Empty reply is a typed error
 
@@ -88,7 +88,7 @@ The reply content SHALL be parsed to text only: a `language X<asr_text>text` bod
 
 ### Requirement: Remote failures are explicit (no fallback)
 
-The remote configuration SHALL be resolved once in `setup()` with fail-fast on misconfiguration; in remote mode the local qwen-ASR loader SHALL never be invoked. `QWEN_REMOTE_TIMEOUT_S` (default 300) SHALL be a per-request connect+read timeout; at v1 there SHALL be zero retries (a mid-swap non-2xx surfaces as a typed `QwenRemoteError:` http_status error, never retried). One failed window SHALL fail the whole prediction with pending futures cancelled; in-flight requests may complete but their results are discarded. Remote failures SHALL surface at the bridge boundary as a prediction failure carrying a stable grep-able message prefixed `QwenRemoteError:` with a category (config/connection/timeout/http_status/parse); messages SHALL never contain the full URL, the audio payload, or the whole reply body (truncated). There SHALL be NO silent fallback to the local engine (operator decision 2026-10-09); logs carry the prefix `qwen-remote:` with host, window count, status and elapsed time, never audio, hotword content or the full URL.
+The remote configuration SHALL be resolved once in `setup()` with fail-fast on misconfiguration; in remote mode the local qwen-ASR loader SHALL never be invoked. `QWEN_REMOTE_TIMEOUT_S` (default 300) SHALL be a per-request connect+read timeout. A window that fails (non-2xx, timeout, unusable reply, `finish_reason == "length"`) SHALL be retried once, then split in two halves at its quietest point and each half resolved the same way, to a maximum split depth of 2 (operator decision 2026-10-20). A window that cannot be saved that way SHALL fail the whole prediction with the typed error and pending futures cancelled; in-flight requests may complete but their results are discarded. Remote failures SHALL surface at the bridge boundary as a prediction failure carrying a stable grep-able message prefixed `QwenRemoteError:` with a category (config/connection/timeout/http_status/parse); messages SHALL never contain the full URL, the audio payload, or the whole reply body (truncated). There SHALL be NO silent fallback to the local engine (operator decision 2026-10-09); logs carry the prefix `qwen-remote:` with host, window count, status and elapsed time, never audio, hotword content or the full URL.
 
 #### Scenario: Remote down gives explicit failure
 
@@ -121,7 +121,7 @@ The `ENABLE_QWEN` kill-switch SHALL remain unchanged. The bridge (which this cha
 
 ### Requirement: Output invariants hold in remote mode
 
-With `QWEN_BACKEND=remote`: segment timestamps SHALL come from the local VAD chunking only; the downstream ForcedAligner word alignment and pyannote diarization stages SHALL run unchanged; the `TranscriptionResult` and diarized output schemas SHALL be identical to the local mode. The bridge request/response contract SHALL be unchanged.
+With `QWEN_BACKEND=remote`: segment timestamps SHALL come from the local quiet-point chunking only; the downstream ForcedAligner word alignment and pyannote diarization stages SHALL run unchanged; the `TranscriptionResult` and diarized output schemas SHALL be identical to the local mode. The bridge request/response contract SHALL be unchanged.
 
 #### Scenario: Schema identity
 

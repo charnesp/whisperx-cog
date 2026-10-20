@@ -8,9 +8,11 @@ resolve_remote_config is NOT duplicated here): this module owns
 - parse_asr_content (G4): the pure reply parser (prefix, None/empty,
   typed errors, first-choice, finish_reason=="length");
 - transcribe_windows (G5): bounded-pool orchestrator reusing the clamped
-  batch_size from predict.resolve_qwen_batch_size; VAD order preserved;
-  one failed window fails the whole prediction (zero retries, explicit
-  typed errors);
+  batch_size from predict.resolve_qwen_batch_size; window order preserved;
+  per-window recovery (operator decision 2026-10-20): a failing window is
+  retried ONCE, then split in two halves at its quietest point
+  (qwen_split.split_window, max depth 2); only a window that cannot be saved
+  that way fails the prediction with its typed error;
 - perform_http_post: urllib seam — ProxyHandler({}) EXPLICIT (internal
   call must never honor HTTP(S)_PROXY; bandit B310 silenced by design
   decision: scheme is validated by qwen_remote.resolve_remote_config,
@@ -40,7 +42,9 @@ from urllib.parse import urlsplit
 logger = logging.getLogger("qwen_remote")
 
 # --- request constants (B1/B6: pinned request identity) --------------------
-REMOTE_META_MAX_TOKENS = 120  # bounded, NOT configurable: window <= 30 s ASR text
+# NOTE (operator decision 2026-10-20): there is NO max_tokens field. A 30 s
+# window emits 109-137 tokens, so any ceiling truncates real transcriptions
+# (finish_reason=length) — the field is absent, not configurable, no default.
 DEFAULT_SYSTEM_PROMPT = (
     "Transcribe the input audio exactly as spoken; reply with the "
     "transcription text only."
@@ -111,7 +115,11 @@ class RemoteTimeoutError(QwenRemoteError):
 
 
 class RemoteHTTPStatusError(QwenRemoteError):
-    """Non-2xx from the engine, zero retries (category: http_status)."""
+    """Non-2xx from the engine (category: http_status).
+
+    The orchestrator retries such a window once and can still salvage it by a
+    quiet-point split; this type only describes the transport failure.
+    """
     category = "http_status"
 
     def __init__(self, status: int, body_prefix: str = ""):
@@ -187,7 +195,7 @@ def _audio_url(window) -> str:
     return encode_wav_data_uri(window)
 
 
-# --- request assembly (B1: model/temperature/max_tokens, B6: language) ------
+# --- request assembly (B1: model/temperature, B6: language) -----------------
 def _system_message(language=None, context=None) -> str:
     parts = [DEFAULT_SYSTEM_PROMPT]
     if language:
@@ -198,11 +206,15 @@ def _system_message(language=None, context=None) -> str:
 
 
 def build_chat_payload(audio_url: str, model: str, language=None, context=None) -> dict:
-    """One chat/completions body for ONE window (multi-modal audio_url)."""
+    """One chat/completions body for ONE window (multi-modal audio_url).
+
+    No ``max_tokens`` on purpose: the engine must be free to emit a full
+    window transcription (hotwords travel in the system message, the only
+    conditioning channel qwen3-asr honours on this route).
+    """
     return {
         "model": model,
         "temperature": 0,
-        "max_tokens": REMOTE_META_MAX_TOKENS,
         "stream": False,
         "messages": [
             {"role": "system", "content": _system_message(language, context)},
@@ -430,6 +442,80 @@ def transcribe_window_meta(audio_url, config: dict, language=None, context=None)
     return parse_response_meta(status, text)
 
 
+# --- per-window recovery (operator decision 2026-10-20) --------------------
+# One retry absorbs a transient engine error / mid-swap; a window the engine
+# keeps rejecting (e.g. finish_reason=length on a dense 30 s block) is split in
+# two at its quietest point and each half retried, at most REMOTE_MAX_SPLIT_DEPTH
+# times (30 s -> 15 s -> 7.5 s) before the typed error surfaces.
+REMOTE_WINDOW_RETRIES = 1
+REMOTE_MAX_SPLIT_DEPTH = 2
+
+
+def _split_window_payload(window):
+    """Two halves of one window at its quietest point, or None if unsplittable.
+
+    Only raw sample sequences can be split: an already-encoded data URI (or any
+    non-array payload) carries no samples to analyse, so the caller surfaces its
+    typed error instead of pretending to recover.
+    """
+    if window is None or isinstance(window, (str, bytes, bytearray)):
+        return None
+    try:
+        import qwen_split  # numpy-only module, imported lazily (stdlib client)
+    except ImportError:  # pragma: no cover - numpy is a runtime dependency
+        return None
+    try:
+        return qwen_split.split_window(window)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fuse_window_parts(parts):
+    """Fuse recovered halves: chronological text join + first detected language."""
+    texts = [text for text, _language in parts if text and text.strip()]
+    language = next((lang for _text, lang in parts if lang), None)
+    return " ".join(texts), language
+
+
+def _transcribe_window_recovering(window, config, language=None, context=None, depth=0):
+    """ONE input window -> (text, language), surviving transient/oversized failures.
+
+    Policy: attempt, retry once, then split in two halves at the quietest point
+    and recurse (``depth`` bounded by REMOTE_MAX_SPLIT_DEPTH). The window's
+    samples are encoded once, so retries and halves never re-encode the parent.
+    A split that cannot be placed re-raises the last typed error unchanged.
+    """
+    audio_url = _audio_url(window)
+    last_error = None
+    for _attempt in range(REMOTE_WINDOW_RETRIES + 1):
+        try:
+            return transcribe_window_meta(
+                audio_url, config, language=language, context=context
+            )
+        except QwenRemoteError as exc:
+            last_error = exc
+    halves = (
+        _split_window_payload(window)
+        if depth < REMOTE_MAX_SPLIT_DEPTH
+        else None
+    )
+    if halves is None:
+        raise last_error
+    logger.debug(
+        "qwen-remote: window failed %d times, splitting at the quietest point "
+        "(depth=%d)",
+        REMOTE_WINDOW_RETRIES + 1,
+        depth + 1,
+    )
+    parts = [
+        _transcribe_window_recovering(
+            half, config, language=language, context=context, depth=depth + 1
+        )
+        for half in halves
+    ]
+    return _fuse_window_parts(parts)
+
+
 def clamp_remote_pool_size(requested, fallback: int = 4, cap: int = 8) -> int:
     """Concurrency bound: the SAME resolver as predict.resolve_qwen_batch_size.
 
@@ -473,7 +559,7 @@ def transcribe_windows(
     context=None,
     executor: Callable[..., ThreadPoolExecutor] | None = None,
 ):
-    """All windows -> all texts, in INPUT (VAD) order, zero retries.
+    """All windows -> all texts, in INPUT order (per-window recovery included).
 
     Backwards-compatible view over `transcribe_windows_meta` (texts only).
     """
@@ -496,15 +582,18 @@ def transcribe_windows_meta(
     context=None,
     executor: Callable[..., ThreadPoolExecutor] | None = None,
 ):
-    """All windows -> (texts, detected ISO languages), in INPUT (VAD) order.
+    """All windows -> (texts, detected ISO languages), in INPUT order.
 
     Concurrency == clamped batch_size (predict clamp semantics: default 4,
-    cap 8, <=0/invalid -> default). ONE failed window fails the WHOLE
-    prediction with its typed error: pending futures are cancelled
-    (cancel_futures=True), in-flight results discarded, no partial fused
-    output, no retry, no local fallback. The executor is shut down EXPLICITLY
-    (never via a `with` block, whose __exit__ would re-run shutdown(wait=True)
-    and undo the cancellation the typed error is meant to honour).
+    cap 8, <=0/invalid -> default). Each window is resolved by
+    `_transcribe_window_recovering`: one attempt, one retry, then a quiet-point
+    split (max depth 2) — a window the engine can still save never fails the
+    prediction. A window that cannot be split raises its typed error: pending
+    futures are cancelled (cancel_futures=True), in-flight results discarded,
+    no partial fused output, no local fallback. The executor is shut down
+    EXPLICITLY (never via a `with` block, whose __exit__ would re-run
+    shutdown(wait=True) and undo the cancellation the typed error is meant to
+    honour).
     """
     if not windows:
         return [], []
@@ -518,7 +607,7 @@ def transcribe_windows_meta(
     try:
         future_to_index = {
             pool.submit(
-                transcribe_window_meta, window, config, language=language, context=context
+                _transcribe_window_recovering, window, config, language=language, context=context
             ): index
             for index, window in enumerate(windows)
         }

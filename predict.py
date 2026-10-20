@@ -193,44 +193,30 @@ def resolve_qwen_snapshot_dir(candidates=None) -> str:
 
 
 QWEN_SAMPLE_RATE = 16000
-QWEN_VAD_CHUNK_SIZE = 30  # seconds; same chunking as the local asr_qwen path
+QWEN_WINDOW_MAX_S = 30.0  # seconds per remote request (vLLM documented maximum)
 
 
-def qwen_remote_windows(audio, vad_onset, vad_offset, chunk_size=QWEN_VAD_CHUNK_SIZE):
-    """Local client-side VAD chunking for the remote path.
+def qwen_remote_windows(audio, max_window_s=QWEN_WINDOW_MAX_S):
+    """Quiet-point chunking for the remote path (no VAD, no GPU).
 
-    Timestamps on the remote path come from THIS local VAD only (design
-    decision: the server never timestamps). Mirrors the local asr_qwen
-    chunking (pyannote preprocess_audio + merge_chunks, chunk_size=30) so
-    remote and local segment boundaries are produced identically. Returns a
-    list of (start, end, samples) in VAD order; ``samples`` is the raw
-    waveform slice for one window (posted as one remote request downstream).
+    Method documented by vLLM ("Chunking Long Audio for Transcription"): cut
+    each 30 s block on the quietest point of its last second (RMS energy over
+    1600-sample frames) instead of an arbitrary boundary, so a word is never
+    sliced mid-utterance. The previous pyannote VAD ``merge_chunks`` splitter
+    is gone from this path: it needed a device-resident VAD model, produced
+    uneven windows and could exceed the engine's comfortable duration.
+
+    Returns ``(start, end, samples)`` in chronological order; ``samples`` is
+    the raw 16 kHz mono slice of one window, posted as one remote request
+    downstream. Bounds are absolute and never derived from the engine reply.
     """
     import numpy as np
 
-    vads = importlib.import_module("whisperx.vads")
-    audio_np = np.asarray(audio, dtype=np.float32)
-    device_vad = "cpu" if device == "cpu" else device
-    vad_model = vads.Pyannote(
-        torch.device(device_vad),
-        token=None,
-        chunk_size=chunk_size,
-        vad_onset=vad_onset,
-        vad_offset=vad_offset,
+    import qwen_split
+
+    return qwen_split.split_audio(
+        np.asarray(audio, dtype=np.float32), max_window_s=max_window_s
     )
-    waveform = vad_model.preprocess_audio(audio_np)
-    vad_segments = vad_model({"waveform": waveform, "sample_rate": QWEN_SAMPLE_RATE})
-    chunks = vad_model.merge_chunks(
-        vad_segments, chunk_size, onset=vad_onset, offset=vad_offset
-    )
-    windows = []
-    for chunk in chunks:
-        start = round(chunk["start"], 3)
-        end = round(chunk["end"], 3)
-        f1 = int(chunk["start"] * QWEN_SAMPLE_RATE)
-        f2 = int(chunk["end"] * QWEN_SAMPLE_RATE)
-        windows.append((start, end, audio_np[f1:f2]))
-    return windows
 
 
 def _remote_result_language(forced_language, window_languages):
@@ -249,19 +235,19 @@ def _remote_result_language(forced_language, window_languages):
     return "en"
 
 
-def transcribe_qwen_remote(
-    audio, config, batch_size, language, context, vad_onset, vad_offset
-):
-    """Remote transcription of the local VAD windows (design decision 4).
+def transcribe_qwen_remote(audio, config, batch_size, language, context):
+    """Remote transcription of the quiet-point windows (operator decision 2026-10-20).
 
-    Each window is posted by qwen_remote_client (bounded pool == clamped
-    batch_size, zero retries). ONE failed window raises a typed
-    QwenRemoteError and fails the whole prediction: NO local fallback. The
-    fused segments carry the LOCAL VAD start/end — the server reply text
-    never determines timestamps. The server-detected language (reply prefix)
-    drives `language` when the caller passed none.
+    Windows come from `qwen_remote_windows` (quiet-point chunking, 30 s max),
+    each posted by qwen_remote_client (bounded pool == clamped batch_size) with
+    one retry and a quiet-point split before a window is declared lost. A
+    window that cannot be recovered raises a typed QwenRemoteError and fails
+    the whole prediction: NO local fallback. The fused segments carry the LOCAL
+    window start/end — the server reply text never determines timestamps. The
+    server-detected language (reply prefix) drives `language` when the caller
+    passed none.
     """
-    windows = qwen_remote_windows(audio, vad_onset, vad_offset)
+    windows = qwen_remote_windows(audio)
     texts, languages = qwen_remote_client.transcribe_windows_meta(
         [window[2] for window in windows],
         config,
@@ -581,8 +567,6 @@ class Predictor(BasePredictor):
                         effective_batch,
                         language,
                         context,
-                        vad_onset,
-                        vad_offset,
                     )
                 else:
                     result = model.transcribe(

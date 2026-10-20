@@ -6,12 +6,14 @@ Change: openspec/changes/qwen3-asr-remote-vllm tasks.md group 5 (task 5.1):
 - concurrency == clamped batch_size: clamp helper semantics (default 4 when
   absent, cap 8, <=0 / non-integer -> default) proven via a counting double
   (peak concurrent in-flight <= clamp, executor max_workers == clamp);
-- ONE failing window -> whole prediction fails with the typed error,
-  pending futures CANCELLED (cancel_futures=True observable), in-flight
-  results discarded (none fused), NO partial output;
-- ZERO retries: a 5xx in the mock -> immediate typed failure, exactly ONE
-  call for the failing window (no second attempt), other completed windows
-  do NOT trigger local fallback;
+- ONE failing window is retried ONCE, then split in two halves at its quietest
+  point (max depth 2); only a window that cannot be saved that way fails the
+  prediction with the typed error (pending futures CANCELLED,
+  cancel_futures=True observable, in-flight results discarded, no partial
+  output);
+- a payload that cannot be split (already an encoded data URI) surfaces the
+  typed failure after exactly ONE retry, other completed windows do NOT
+  trigger local fallback;
 - caller stays in charge of VAD timestamps: orchestrator returns TEXTS in
   input order only (structural assertion: no start/end in results).
 """
@@ -405,9 +407,8 @@ class TestFailureSemantics(unittest.TestCase):
         self.assertEqual(caught.exception.category, "http_status")
         self.assertIn("503", str(caught.exception))
 
-    def test_zero_retries_5xx_immediate_typed_failure(self):
-        texts = ["never-comes", "never-comes-2"]
-        windows = [f"data:audio/wav;base64,{t}" for t in texts]
+    def test_retry_once_then_typed_failure_when_unsplittable(self):
+        windows = ["data:audio/wav;base64,never-comes"]
         attempts = []
 
         def fake_post(url, payload, headers, timeout=None):
@@ -417,7 +418,9 @@ class TestFailureSemantics(unittest.TestCase):
         with mock.patch.object(qwen_remote_client, "perform_http_post", side_effect=fake_post):
             with self.assertRaises(QwenRemoteError):
                 transcribe_windows(windows, CONFIG, batch_size=1)
-        self.assertEqual(len(attempts), 1)  # ONE attempt, no second call, no retry
+        # ONE attempt + ONE retry: no split is possible on an already-encoded
+        # data URI, so the typed error surfaces right after the retry.
+        self.assertEqual(len(attempts), 2)
 
     def test_no_fallback_to_local_engine_on_failure(self):
         """A failed remote window must NOT fall back to any local engine.
@@ -435,8 +438,7 @@ class TestFailureSemantics(unittest.TestCase):
         install()
         local_loader = mock.Mock(side_effect=AssertionError("local ASR fallback"))
         whisper_loader = mock.Mock(side_effect=AssertionError("whisper fallback"))
-        texts = ["x", "y"]
-        windows = [f"data:audio/wav;base64,{t}" for t in texts]
+        windows = ["data:audio/wav;base64,x"]
         attempts = []
 
         def failing_window(url, payload, headers, timeout=None):
@@ -451,7 +453,7 @@ class TestFailureSemantics(unittest.TestCase):
                 transcribe_windows(windows, CONFIG, batch_size=1)
         local_loader.assert_not_called()
         whisper_loader.assert_not_called()
-        self.assertEqual(len(attempts), 1)  # ONE attempt: no retry, no fallback
+        self.assertEqual(len(attempts), 2)  # one attempt + one retry, no fallback
 
 
 if __name__ == "__main__":

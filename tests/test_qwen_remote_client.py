@@ -8,9 +8,11 @@ posting ONE multimodal chat/completions per VAD window (tasks 3.1-3.3):
   error shapes; never invented);
 - explicit ProxyHandler({}): urllib must NOT honor HTTP(S)_PROXY for the
   internal call (decision test, pinned via the constructor call);
-- request body pins: model from env config, temperature=0, bounded
-  max_tokens constant; NEGATIVE assertions: never response_format
-  verbose_json, never timestamp_granularities;
+- request body pins: model from env config, temperature=0, and NO max_tokens
+  field at all (operator decision 2026-10-20: a 30 s window emits 109-137
+  tokens, the former 120-token ceiling truncated replies); NEGATIVE
+  assertions: never response_format verbose_json, never
+  timestamp_granularities;
 - audio travels as a data URI of a deterministic mono 16 kHz PCM16 wav
   (deterministic encoder test: RIFF header fields, sample fidelity table,
   byte-exact round trip against an independently built wav);
@@ -264,16 +266,16 @@ class TestChatCompletionPayload(unittest.TestCase):
             window, CONFIG["model"], **kwargs
         )
 
-    def test_pins_model_temperature_and_bounded_max_tokens(self):
+    def test_pins_model_and_temperature_without_any_max_tokens(self):
         payload = self._payload()
         self.assertEqual(payload["model"], "qwen-vllm-test-model")
         self.assertEqual(payload["temperature"], 0)
-        self.assertTrue(isinstance(payload["max_tokens"], int))
-        self.assertLessEqual(payload["max_tokens"], 128)
-        self.assertGreater(payload["max_tokens"], 0)
-        self.assertEqual(
-            payload["max_tokens"], self.module.REMOTE_META_MAX_TOKENS
-        )
+        # Operator decision 2026-10-20: no token ceiling at all — the field must
+        # be absent (not 0, not None, not configurable): a 30 s window emits
+        # 109-137 tokens, so any bounded value truncates real transcriptions.
+        self.assertNotIn("max_tokens", payload)
+        self.assertNotIn("max_tokens", json.dumps(payload))
+        self.assertFalse(hasattr(self.module, "REMOTE_META_MAX_TOKENS"))
 
     def test_never_requests_server_side_timestamps(self):
         payload = self._payload()

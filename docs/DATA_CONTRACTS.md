@@ -93,10 +93,19 @@ Unit tests: `tests/test_qwen_backend.py`, `tests/test_openai_stt.py`
 
 ## Remote qwen3-asr backend (`QWEN_BACKEND=remote`)
 
-When the qwen3-asr backend runs in remote mode, each local VAD window is one
+When the qwen3-asr backend runs in remote mode, each local window is one
 OpenAI-compatible multimodal chat completion. The address and the model name
 come exclusively from env (`QWEN_REMOTE_BASE_URL`, `QWEN_REMOTE_MODEL`); the
 client-facing bridge contract is unchanged.
+
+### Chunking
+
+Windows come from quiet-point chunking (`qwen_split.py`, method documented by
+vLLM "Chunking Long Audio for Transcription"): max **30 s** per window, cut on
+the quietest point of the last **1 s** (RMS energy over **1600-sample** frames,
+~100 ms at 16 kHz), full coverage, no overlap, no sample lost. Each window
+carries its absolute `(start, end)` in seconds. The remote path no longer loads
+a pyannote VAD model.
 
 ### Request (`POST {QWEN_REMOTE_BASE_URL}/chat/completions`)
 
@@ -104,15 +113,16 @@ client-facing bridge contract is unchanged.
 |-------|-------|
 | `model` | `QWEN_REMOTE_MODEL`, verbatim |
 | `temperature` | `0` |
-| `max_tokens` | bounded |
+| `max_tokens` | **absent** — no ceiling at all (operator decision 2026-10-20: a 30 s window emits 109-137 tokens, a bounded value truncates real transcriptions) |
 | `messages[0]` (`system`, one string) | transcription instruction + optional language instruction (the caller's ISO code) + optional meeting `context` (formatted hotwords), space-joined |
 | `messages[1]` (`user`) `content` | a single `audio_url` part: `data:audio/wav;base64,...` (mono 16 kHz PCM16) |
 
 The client never requests server-side timestamps (no `verbose_json`, no
 `timestamp_granularities`). Window concurrency is bounded by the clamped
-`batch_size` (default `4`, cap `8`) and results are fused in **VAD window
-order**. The `context` system message travels with every request; hotword
-content never appears in logs.
+`batch_size` (default `4`, cap `8`) and results are fused in **window order**.
+The `context` system message is the only hotword channel and travels with every
+request (the engine's `/v1/audio/transcriptions` route ignores `hotwords` and
+copies `prompt` verbatim); hotword content never appears in logs.
 
 ### Response
 
@@ -123,7 +133,7 @@ token is normalised to an ISO code and propagated: when the caller passed no
 `en` only as a last-resort fallback. Content with no `language`/`<asr_text>`
 prefix at all (structured output) is used as-is. A `language X` prefix WITHOUT an
 `<asr_text>` marker, empty/missing content, or `finish_reason == "length"` is a
-typed error. Segment `start`/`end` always come from the local VAD window, never
+typed error. Segment `start`/`end` always come from the local window, never
 the reply.
 
 ### Error taxonomy (`QwenRemoteError:`)
@@ -139,12 +149,16 @@ with exactly one category:
 | `http_status` | engine answered a non-2xx status |
 | `parse` | reply body unusable (missing/empty content, `finish_reason == "length"`, a `language X` prefix with no `<asr_text>` marker) |
 
-At v1 there are **zero retries** and **no silent fallback** to the local engine:
-one failed window fails the whole prediction. The failure status depends on the
+A window that fails (non-2xx, timeout, unusable reply, `finish_reason == "length"`)
+is retried **once**, then split in two halves at its quietest point and each half
+resolved the same way (max depth **2**: 30 s → 15 s → 7.5 s). Only a window that
+cannot be split (or still fails at depth 2) fails the whole prediction; there is
+**no silent fallback** to the local engine. The failure status depends on the
 bridge surface: `POST /v1/audio/transcriptions` returns HTTP **500 `server_error`**
 (`bridge/openai_compat.py`), while the `/predictions` proxy path returns HTTP **502**
 (`bridge/bridge.py`). Messages never carry the full URL, the audio payload or the
 whole reply body (truncated).
 
 Unit tests: `tests/test_qwen_remote_config.py`, `tests/test_qwen_remote_client.py`,
-`tests/test_qwen_remote_parser.py`, `tests/test_qwen_remote_pool.py`.
+`tests/test_qwen_remote_parser.py`, `tests/test_qwen_remote_pool.py`,
+`tests/test_qwen_remote_quiet_chunking.py`.
