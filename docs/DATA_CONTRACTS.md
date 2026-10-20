@@ -107,6 +107,23 @@ the quietest point of the last **1 s** (RMS energy over **1600-sample** frames,
 carries its absolute `(start, end)` in seconds. The remote path no longer loads
 a pyannote VAD model.
 
+### Silence and recovery
+
+A window whose peak absolute amplitude is below `SILENCE_PEAK_THRESHOLD`
+(`0.003`, [-1, 1] scale) carries no speech: it is never posted, resolves to an
+empty text and a `None` language, and keeps its slot on the timeline (segment
+with empty `text`, absolute `start`/`end`). No request, no retry, no split.
+
+A window the engine fails on is retried once. Only a **content** failure
+(unparseable/empty reply, `finish_reason=length`, content-related HTTP 4xx/5xx)
+may then be repaired by splitting it in two at its quietest point, at most 2
+levels deep. A `timeout` or `connection` failure is never split (the shorter
+window would not repair it) and neither are request-identity statuses
+(400/401/403/404/405/422/429). One input window never spends more than
+`REMOTE_MAX_ATTEMPTS_PER_WINDOW` (`10`) HTTP attempts. A failure that survives
+all of that raises its typed `QwenRemoteError:`: the prediction fails, no
+partial output is returned.
+
 ### Request (`POST {QWEN_REMOTE_BASE_URL}/chat/completions`)
 
 | Field | Value |

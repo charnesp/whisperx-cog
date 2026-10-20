@@ -1,5 +1,7 @@
 # Security audit — change `qwen3-asr-remote-vllm` (group 11.2)
 
+> superseded 2026-10-20 (fix/qwen-remote-quiet-chunking) : plus de plafond de tokens, découpage aux points calmes, reprise bornée
+
 Operator gate for the chantier, run 2026-10-09 on the change branch
 `feat/qwen3-asr-remote-vllm`. Every claim below is backed by a command that was
 executed, not by intent. Nothing here was run on a GPU host and no production
@@ -38,10 +40,11 @@ stack was touched.
 - `http_status` bodies are truncated (96 bytes); `config` errors name the missing variable.
 - No silent local fallback exists in code, and the guarantee is now tested for real (the earlier test asserted on a list nothing ever appended to — it was replaced in this cycle by a test that observes the actual local-loader seam).
 
-## 6. Zero-retry posture
+## 6. Zero-retry posture (superseded 2026-10-20: bounded recovery)
 
-- `docs/DATA_CONTRACTS.md`: "zero retries and no silent fallback to the local engine" at v1; the spec carries the same statement.
-- Implemented: one HTTP attempt per window, `cancel_futures=True` on failure, no retry loop; a 5xx is a single attempt (asserted).
+- Historical statement (2026-10-09): `docs/DATA_CONTRACTS.md` said "zero retries and no silent fallback to the local engine" at v1; the spec carried the same statement.
+- Implemented at the time: one HTTP attempt per window, `cancel_futures=True` on failure, no retry loop; a 5xx was a single attempt (asserted).
+- Current rule (2026-10-20, supersedes the above): explicit errors and no local fallback are unchanged, but a failing window is now recovered under a hard bound: ONE retry, then a quiet-point split for CONTENT failures only (never for a timeout or a connection failure, nor for request-identity statuses 400/401/403/404/405/422/429), maximum split depth 2, and at most `REMOTE_MAX_ATTEMPTS_PER_WINDOW` = 10 HTTP attempts per input window (measured worst case of a complete depth-2 recovery). A silent window (peak amplitude below 0.003) is never posted at all. A persistent failure is a typed `QwenRemoteError:` with no partial output. Evidence: `tests/test_qwen_remote_recovery_budget.py`, `tests/test_qwen_remote_silence_guard.py`.
 
 ## 7. Dependency triage (accepted risk)
 
@@ -57,4 +60,4 @@ stack was touched.
 - Qwen3-ASR is **not registered in the model gateway production config**: the GPU smoke exercised a throwaway engine directly. Validating `cog → the model gateway → vLLM` routing (alias + wake path) is a deployment prerequisite, tracked on task 10.1.
 - `QWEN_REMOTE_TIMEOUT_S` is a per-operation socket timeout, not a wall-clock bound; documented, with sizing guidance against the bridge timeout.
 
-Verdict: **gate passed** — no leak, no committed address, no secret, no payload logging, explicit errors, zero-retry documented, reviews and confirmation completed. The two residual items above are deployment-time actions, not code defects.
+Verdict: **gate passed** — no leak, no committed address, no secret, no payload logging, explicit errors, zero-retry documented (superseded 2026-10-20: bounded recovery, see section 6), reviews and confirmation completed. The two residual items above are deployment-time actions, not code defects.

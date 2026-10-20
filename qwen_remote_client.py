@@ -90,6 +90,35 @@ _LANGUAGE_NAME_TO_ISO = {
 HTTP_STATUS_OK = 200
 _ERROR_BODY_SNIPPET_BYTES = 96  # truncate upstream bodies in error messages
 
+# --- per-window recovery + silence policy (operator decision 2026-10-20) ----
+# One retry absorbs a transient engine hiccup. A window the engine keeps
+# REJECTING ON CONTENT is split at its quietest point and each half retried,
+# at most REMOTE_MAX_SPLIT_DEPTH times (30 s -> 15 s -> 7.5 s). Whatever the
+# tree shape, ONE INPUT window never spends more than
+# REMOTE_MAX_ATTEMPTS_PER_WINDOW HTTP attempts: the budget is shared by the
+# whole split tree, so a pathological failure cannot fan out into a request
+# storm (the unbounded tree reached 14 requests).
+# 10 is the MEASURED cost of the deepest supported recovery (parent attempt +
+# retry, both halves attempt + retry, four quarters accepted — see
+# tests/test_qwen_remote_recovery_budget.py), i.e. the cap never truncates a
+# recovery the policy promises, while a flaky engine stays bounded.
+REMOTE_WINDOW_RETRIES = 1
+REMOTE_MAX_SPLIT_DEPTH = 2
+REMOTE_MAX_ATTEMPTS_PER_WINDOW = 10
+
+# Peak absolute amplitude below which a window carries no speech, on the
+# [-1, 1] float sample scale (0.003 ~ -50 dBFS: below any usable speech, above
+# dithered digital silence). Such a window resolves to ("", None) with NO
+# request: the engine answers empty content on silence, which is a parse
+# failure, so posting it burned a retry, a split and finally the prediction
+# (measured: 61 s of silence -> 3 windows -> total failure).
+SILENCE_PEAK_THRESHOLD = 0.003
+
+# Content failures a shorter window CANNOT repair: bad request/auth/routing and
+# rate limiting are properties of the request, not of its duration. They get the
+# single retry, never a split.
+_UNFIXABLE_HTTP_STATUS = frozenset({400, 401, 403, 404, 405, 422, 429})
+
 
 # QwenRemoteError + the shared clamp resolver live in qwen_remote.py (sibling,
 # group 2 owner); import them so every qwen_remote_client failure passes
@@ -117,17 +146,26 @@ class RemoteTimeoutError(QwenRemoteError):
 class RemoteHTTPStatusError(QwenRemoteError):
     """Non-2xx from the engine (category: http_status).
 
-    The orchestrator retries such a window once and can still salvage it by a
-    quiet-point split; this type only describes the transport failure.
+    Recovery (operator decision 2026-10-20): the orchestrator retries such a
+    window once, then — for a CONTENT-related status — splits it at its quietest
+    point. Auth/routing/rate-limit statuses are never split. Either way the
+    whole split tree of one input window is capped by
+    ``REMOTE_MAX_ATTEMPTS_PER_WINDOW``.
     """
+
     category = "http_status"
 
     def __init__(self, status: int, body_prefix: str = ""):
+        self.status = int(status)
         snippet = body_prefix.strip()[:_ERROR_BODY_SNIPPET_BYTES]
         suffix = f" body_prefix={snippet!r}" if snippet else ""
+        self.body_prefix = snippet
         super().__init__(
             _q_message(
-                f"remote engine returned HTTP {status} (retry policy: NONE){suffix}",
+                f"remote engine returned HTTP {self.status} (recovery: "
+                f"{REMOTE_WINDOW_RETRIES} retry, then a quiet-point split for "
+                f"content failures, at most {REMOTE_MAX_ATTEMPTS_PER_WINDOW} "
+                f"attempts per window){suffix}",
                 self.category,
             )
         )
@@ -206,6 +244,49 @@ def _audio_url(window) -> str:
         return window  # already a data URI (window pre-encoded upstream)
     samples = _window_samples(window)
     return encode_wav_data_uri(window if samples is None else samples)
+
+
+# --- silence guard (F1, operator decision 2026-10-20) -----------------------
+def peak_amplitude(window):
+    """Peak |sample| of a window, or None when the payload carries no samples.
+
+    A pre-encoded data URI (``str``/``bytes``) has no samples to inspect: the
+    guard cannot judge it and lets it through unchanged.
+    """
+    if window is None or isinstance(window, (str, bytes, bytearray)):
+        return None
+    samples = _window_samples(window)
+    if samples is None:
+        samples = window
+    try:
+        import numpy  # lazy: the client stays usable without numpy
+    except ImportError:  # pragma: no cover - numpy is a runtime dependency
+        numpy = None
+    if numpy is not None:
+        values = numpy.asarray(samples, dtype=numpy.float64)
+        if values.size == 0:
+            return 0.0
+        return float(numpy.max(numpy.abs(values)))
+    peak = 0.0
+    for value in samples:  # pragma: no cover - numpy is a runtime dependency
+        magnitude = abs(float(value))
+        if magnitude > peak:
+            peak = magnitude
+    return peak
+
+
+def _silence_shortcut(window):
+    """("", None) when the window holds no speech, else None (no request sent).
+
+    Silence is measured on the window's own samples, BEFORE encoding: a window
+    whose peak amplitude is below ``SILENCE_PEAK_THRESHOLD`` never reaches the
+    engine, is never retried and is never split. Its empty text keeps the
+    window's absolute bounds downstream, so the timeline stays complete.
+    """
+    peak = peak_amplitude(window)
+    if peak is None or peak >= SILENCE_PEAK_THRESHOLD:
+        return None
+    return "", None
 
 
 # --- request assembly (B1: model/temperature, B6: language) -----------------
@@ -446,7 +527,14 @@ def transcribe_window(audio_url, config: dict, language=None, context=None) -> s
 
 
 def transcribe_window_meta(audio_url, config: dict, language=None, context=None):
-    """ONE window -> ONE POST -> (parsed text, detected ISO language)."""
+    """ONE window -> ONE POST -> (parsed text, detected ISO language).
+
+    A window carrying no speech at all short-circuits to ("", None): no request,
+    no retry, no split (see `_silence_shortcut`).
+    """
+    silent = _silence_shortcut(audio_url)
+    if silent is not None:
+        return silent
     payload = build_chat_payload(_audio_url(audio_url), config["model"], language=language, context=context)
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     status, text = perform_http_post(
@@ -456,12 +544,46 @@ def transcribe_window_meta(audio_url, config: dict, language=None, context=None)
 
 
 # --- per-window recovery (operator decision 2026-10-20) --------------------
-# One retry absorbs a transient engine error / mid-swap; a window the engine
-# keeps rejecting (e.g. finish_reason=length on a dense 30 s block) is split in
-# two at its quietest point and each half retried, at most REMOTE_MAX_SPLIT_DEPTH
-# times (30 s -> 15 s -> 7.5 s) before the typed error surfaces.
-REMOTE_WINDOW_RETRIES = 1
-REMOTE_MAX_SPLIT_DEPTH = 2
+# Policy (F3, adversarial review 2026-10-20): ONE retry absorbs a transient
+# hiccup; only a CONTENT failure may then be repaired by cutting the window in
+# two at its quietest point (max REMOTE_MAX_SPLIT_DEPTH levels). A timeout or a
+# connection failure is never split — a shorter window does not restore a dead
+# network or a server that stopped answering, it only multiplies the wait.
+# Whatever the shape of the failure tree, ONE INPUT window spends at most
+# REMOTE_MAX_ATTEMPTS_PER_WINDOW requests (see `_AttemptBudget`).
+class _AttemptBudget:
+    """HTTP attempts allowed for ONE input window, shared by its whole split tree."""
+
+    __slots__ = ("limit", "used")
+
+    def __init__(self, limit: int | None = None):
+        # resolved at INSTANTIATION time so the named constant is the single knob
+        self.limit = int(REMOTE_MAX_ATTEMPTS_PER_WINDOW if limit is None else limit)
+        self.used = 0
+
+    def remaining(self) -> int:
+        return max(0, self.limit - self.used)
+
+    def spend(self) -> bool:
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
+
+def _is_splittable(error) -> bool:
+    """True only when a shorter window can plausibly repair the failure.
+
+    Content failures qualify: unparseable/empty reply, ``finish_reason=length``
+    and a content-related HTTP status. Transport failures (timeout, connection)
+    do not, and neither do statuses that describe the request itself
+    (bad request, auth, routing, rate limit) — see `_UNFIXABLE_HTTP_STATUS`.
+    """
+    if isinstance(error, RemoteResponseParserError):
+        return True
+    if isinstance(error, RemoteHTTPStatusError):
+        return int(getattr(error, "status", 0) or 0) not in _UNFIXABLE_HTTP_STATUS
+    return False
 
 
 def _split_window_payload(window):
@@ -494,39 +616,69 @@ def _fuse_window_parts(parts):
     return " ".join(texts), language
 
 
-def _transcribe_window_recovering(window, config, language=None, context=None, depth=0):
-    """ONE input window -> (text, language), surviving transient/oversized failures.
+def _transcribe_window_recovering(
+    window, config, language=None, context=None, depth=0, budget=None
+):
+    """ONE input window -> (text, language), within a bounded recovery policy.
 
-    Policy: attempt, retry once, then split in two halves at the quietest point
-    and recurse (``depth`` bounded by REMOTE_MAX_SPLIT_DEPTH). The window's
-    samples are encoded once, so retries and halves never re-encode the parent.
-    A split that cannot be placed re-raises the last typed error unchanged.
+    Order of decisions (F1 then F3, operator decision 2026-10-20):
+
+    1. no speech in the window (peak amplitude below ``SILENCE_PEAK_THRESHOLD``)
+       -> ("", None) immediately: no request, no retry, no split;
+    2. otherwise attempt, retry once;
+    3. on a CONTENT failure only, split in two halves at the quietest point and
+       recurse (``depth`` bounded by REMOTE_MAX_SPLIT_DEPTH); a transport
+       failure (timeout/connection) raises its typed error after the retry;
+    4. every request spends one unit of the per-input-window ``budget``
+       (REMOTE_MAX_ATTEMPTS_PER_WINDOW), so the whole split tree is bounded.
+
+    The window's samples are encoded once, so retries and halves never re-encode
+    the parent. A failure that cannot be recovered re-raises its typed error
+    unchanged — no partial text ever leaves this function as a success.
     """
+    if budget is None:
+        budget = _AttemptBudget()
+    silent = _silence_shortcut(window)
+    if silent is not None:
+        return silent
     audio_url = _audio_url(window)
     last_error = None
     for _attempt in range(REMOTE_WINDOW_RETRIES + 1):
+        if not budget.spend():
+            break
         try:
             return transcribe_window_meta(
                 audio_url, config, language=language, context=context
             )
         except QwenRemoteError as exc:
             last_error = exc
-    halves = (
-        _split_window_payload(window)
-        if depth < REMOTE_MAX_SPLIT_DEPTH
-        else None
-    )
+    if last_error is None:  # budget exhausted before the first request
+        raise RemoteConnectionError(
+            f"per-window attempt budget exhausted ({budget.limit} attempts): "
+            "no request could be sent for this window"
+        )
+    if not _is_splittable(last_error):
+        raise last_error  # a split cannot repair a transport/request failure
+    if depth >= REMOTE_MAX_SPLIT_DEPTH or budget.remaining() <= 0:
+        raise last_error
+    halves = _split_window_payload(window)
     if halves is None:
         raise last_error
     logger.debug(
-        "qwen-remote: window failed %d times, splitting at the quietest point "
-        "(depth=%d)",
+        "qwen-remote: window failed on content %d times, splitting at the "
+        "quietest point (depth=%d, budget_left=%d)",
         REMOTE_WINDOW_RETRIES + 1,
         depth + 1,
+        budget.remaining(),
     )
     parts = [
         _transcribe_window_recovering(
-            half, config, language=language, context=context, depth=depth + 1
+            half,
+            config,
+            language=language,
+            context=context,
+            depth=depth + 1,
+            budget=budget,
         )
         for half in halves
     ]
