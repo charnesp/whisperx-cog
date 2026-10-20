@@ -380,6 +380,119 @@ class TestPerWindowRecovery(unittest.TestCase):
             self.assertEqual(body["messages"][0]["role"], "system")
 
 
+class TestRealWindowsFromSplitAudio(unittest.TestCase):
+    """Regression: the client receives ``qwen_split.Window`` objects, not arrays.
+
+    Production wiring is ``qwen_split.split_audio(audio)`` -> ``transcribe_windows_meta``.
+    A ``Window`` is a NamedTuple ``(start, end, samples)``: iterating it as if it
+    were a sample sequence encodes the floats ``start``/``end`` and the array
+    itself, which raised ``TypeError: only 0-dimensional arrays can be converted
+    to Python scalars``. These tests pin the REAL objects, not bare arrays.
+    """
+
+    @staticmethod
+    def _signal(seconds=75.0, dips=(29.3, 58.4)):
+        """Tone with silent dips inside the quiet-search window of each limit."""
+        audio = _tone(seconds)
+        for centre in dips:
+            lo = int((centre - 0.1) * SAMPLE_RATE)
+            hi = int((centre + 0.1) * SAMPLE_RATE)
+            audio[lo:hi] = 0.0
+        return audio
+
+    def test_split_audio_yields_window_objects_under_test(self):
+        windows = qwen_split.split_audio(self._signal())
+        self.assertGreaterEqual(len(windows), 3)
+        for window in windows:
+            self.assertIsInstance(window, qwen_split.Window)
+            self.assertEqual(len(window), 3, "Window stays (start, end, samples)")
+
+    def test_window_objects_are_transcribed_in_order_with_their_own_samples(self):
+        """(a) no exception, (b) texts in window order, (c) body carries that window's samples."""
+        windows = qwen_split.split_audio(self._signal())
+        expected = {
+            qwen_remote_client.encode_wav_data_uri(w.samples): "texte-w%d" % index
+            for index, w in enumerate(windows)
+        }
+        counts = {
+            qwen_remote_client.encode_wav_data_uri(w.samples): len(w.samples)
+            for w in windows
+        }
+        self.assertEqual(len(expected), len(windows), "distinct windows must differ in audio")
+        sent = []
+        violations = []
+
+        def seam(url, payload, headers, timeout=None):
+            body = json.loads(payload.decode("utf-8"))
+            audio_url = body["messages"][1]["content"][0]["audio_url"]["url"]
+            sent.append((audio_url, body))
+            if audio_url not in expected:
+                violations.append("payload audio is not a window's own samples")
+                return 200, _envelope("inconnu")
+            return 200, _envelope(expected[audio_url])
+
+        with mock.patch.object(qwen_remote_client, "perform_http_post", side_effect=seam):
+            texts, languages = qwen_remote_client.transcribe_windows_meta(
+                windows, CONFIG, batch_size=2, language="fr", context=HOTWORDS
+            )
+
+        self.assertEqual(violations, [])
+        self.assertEqual(len(texts), len(windows))
+        self.assertEqual(
+            texts,
+            ["texte-w%d" % index for index in range(len(windows))],
+            "one text per window, rendered in INPUT order",
+        )
+        self.assertEqual(languages, ["fr"] * len(windows), "detected ISO language per window")
+        self.assertEqual(len(sent), len(windows), "exactly one request per healthy window")
+        for audio_url, body in sent:
+            self.assertEqual(
+                _wav_sample_count(audio_url),
+                counts[audio_url],
+                "every sample of that window travels, and nothing else",
+            )
+            self.assertNotIn("max_tokens", body)
+            self.assertEqual(body["messages"][0]["role"], "system")
+            self.assertIn(HOTWORDS, body["messages"][0]["content"])
+
+    def test_failed_window_object_is_really_split_not_silently_unsplittable(self):
+        """(d) recovery on a Window: the halves are actually sent, not a silent None."""
+        windows = qwen_split.split_audio(self._signal(seconds=6.0))
+        self.assertEqual(len(windows), 1)
+        window = windows[0]
+        parent_count = len(window.samples)
+
+        halves = qwen_remote_client._split_window_payload(window)
+        if halves is None:
+            self.fail("a Window must be splittable from its samples")
+        left, right = halves
+        self.assertEqual(len(left) + len(right), parent_count, "split loses no sample")
+        np.testing.assert_array_equal(np.concatenate([left, right]), window.samples)
+
+        sent = []
+
+        def refuse_parent(url, payload, headers, timeout=None):
+            body = json.loads(payload.decode("utf-8"))
+            audio_url = body["messages"][1]["content"][0]["audio_url"]["url"]
+            count = _wav_sample_count(audio_url)
+            sent.append(count)
+            if count == parent_count:
+                raise qwen_remote_client.RemoteHTTPStatusError(503, "window rejected")
+            return 200, _envelope("moitie")
+
+        with mock.patch.object(
+            qwen_remote_client, "perform_http_post", side_effect=refuse_parent
+        ):
+            texts = qwen_remote_client.transcribe_windows([window], CONFIG, batch_size=1)
+
+        self.assertEqual(len(texts), 1, "bounds stay the parent window's: one input, one text")
+        self.assertEqual(texts[0].count("moitie"), 2, "both halves transcribed and fused")
+        self.assertEqual(sent.count(parent_count), 2, "attempt + one retry of the parent")
+        halves_sent = [count for count in sent if count != parent_count]
+        self.assertEqual(len(halves_sent), 2, "recovery really requested the two halves")
+        self.assertEqual(sum(halves_sent), parent_count)
+
+
 class TestParserNonRegression(unittest.TestCase):
     """Decision 1 must not weaken the reply parser guard rails."""
 

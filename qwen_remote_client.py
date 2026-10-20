@@ -189,10 +189,23 @@ def encode_wav_data_uri(samples) -> str:
     return "data:audio/wav;base64," + base64.b64encode(wav).decode("ascii")
 
 
+def _window_samples(window):
+    """Samples carried by a window object, or None for a bare sequence/URI.
+
+    ``qwen_split.Window`` is a NamedTuple ``(start, end, samples)``: iterating it
+    as a sample sequence encodes ``start``/``end`` floats and the array itself
+    (``TypeError: only 0-dimensional arrays...``). The audio is ALWAYS
+    ``.samples`` when the object carries one; the bounds never travel to the
+    engine (they stay the caller's absolute offsets).
+    """
+    return getattr(window, "samples", None)
+
+
 def _audio_url(window) -> str:
     if isinstance(window, str):
         return window  # already a data URI (window pre-encoded upstream)
-    return encode_wav_data_uri(window)
+    samples = _window_samples(window)
+    return encode_wav_data_uri(window if samples is None else samples)
 
 
 # --- request assembly (B1: model/temperature, B6: language) -----------------
@@ -456,16 +469,20 @@ def _split_window_payload(window):
 
     Only raw sample sequences can be split: an already-encoded data URI (or any
     non-array payload) carries no samples to analyse, so the caller surfaces its
-    typed error instead of pretending to recover.
+    typed error instead of pretending to recover. A ``qwen_split.Window`` is
+    split on ITS samples (passing the NamedTuple would hand numpy a heterogeneous
+    object and silently yield None, i.e. recovery that never recovers).
     """
     if window is None or isinstance(window, (str, bytes, bytearray)):
         return None
+    samples = _window_samples(window)
+    payload = window if samples is None else samples
     try:
         import qwen_split  # numpy-only module, imported lazily (stdlib client)
     except ImportError:  # pragma: no cover - numpy is a runtime dependency
         return None
     try:
-        return qwen_split.split_window(window)
+        return qwen_split.split_window(payload)
     except (TypeError, ValueError):
         return None
 
