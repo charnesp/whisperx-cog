@@ -21,6 +21,7 @@ from whisperx.audio import N_SAMPLES, log_mel_spectrogram
 import whisperx
 from whisperx.diarize import DiarizationPipeline
 from json_sanitize import sanitize_error_message, sanitize_for_json
+from segment_resegmentation import resegment_result
 from hf_token import require_diarization_token
 from model_paths import (
     resolve_model_dir,
@@ -621,6 +622,18 @@ class Predictor(BasePredictor):
                     min_speakers,
                     max_speakers,
                 )
+                # Rebuild segments from speaker turns: diarization labels each
+                # audio window with its dominant speaker, so a 30 s window where
+                # three people speak stays a single turn. The words already carry
+                # their speaker. On any failure the raw segments are kept and the
+                # reason is logged: a prediction must never fail for this.
+                try:
+                    result = resegment_result(result)
+                except Exception as exc:  # noqa: BLE001 - keep the prediction alive
+                    print(
+                        f"segment resegmentation skipped: {type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
 
             if debug:
                 print(

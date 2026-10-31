@@ -8,6 +8,7 @@ Execution plans and tech-debt tracker for agent-first work. Architecture: [docs/
 |------|-------|------------|
 | `openai-diarized-json-endpoint` | OpenAI `diarized_json` + `gpt-4o-transcribe-diarize` on bridge | See `openspec/changes/openai-diarized-json-endpoint/` |
 | `qwen3-asr-remote-vllm` | Remote qwen3-asr backend: env-selected HTTP delegation to an external OpenAI-compatible engine; local path and faster-whisper path unchanged | See `openspec/changes/qwen3-asr-remote-vllm/`; GPU smoke (task 10) is the pre-merge gate |
+| `qwen-segment-resegmentation` | Segments follow speaker turns instead of audio windows (pure helper + guarded wiring after diarization) | See `openspec/changes/qwen-segment-resegmentation/`; `make -f Makefile.harness ci` green, GPU smoke + canary are the deploy gates |
 
 ## Completed
 

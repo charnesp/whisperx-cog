@@ -15,8 +15,8 @@ Shapes at system boundaries. Cog/Replicate API references: [README.md](../README
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `segments` | array | Utterances with `start`, `end`, `text` |
-| `segments[].words` | array | Optional — alignment enabled |
+| `segments` | array | Speaker turns (re-segmented after diarization: one segment per turn, not per audio window) with `start`, `end`, `text`, `chars` |
+| `segments[].words` | array | Optional — alignment enabled; every word carries its `speaker` when diarization ran |
 | `segments[].speaker` | string | Optional — diarization enabled |
 | `detected_language` | string | ISO code |
 | `speaker_embeddings` | object \| null | `{ "SPEAKER_00": [float, ...] }` or null |
