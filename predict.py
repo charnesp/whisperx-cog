@@ -37,6 +37,11 @@ import time
 import torch
 import ffmpeg
 
+# Module logger: a failed prediction keeps its traceback here. The client only
+# receives a sanitised one-line message, so without this the real cause is lost
+# (measured: a KeyError deep in the model path left nothing in the container log).
+_LOG = logging.getLogger(__name__)
+
 import qwen_remote
 import qwen_remote_client
 
@@ -386,6 +391,11 @@ class Predictor(BasePredictor):
             )
         except Exception as e:
             safe_msg = sanitize_error_message(str(e))
+            # Keep the traceback server-side: the client message stays a sanitised
+            # one-liner, but an operator can read the real cause in the container log.
+            _LOG.error(
+                "prediction failed: %s: %s", type(e).__name__, safe_msg, exc_info=True
+            )
             raise RuntimeError(f"Prediction failed: {type(e).__name__}: {safe_msg}") from None
 
     def _run_predict(
