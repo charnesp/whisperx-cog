@@ -61,8 +61,45 @@ checked yet; do not remove before an import audit.
 **D. Nothing to gain on caches.** `pip` runs with `--no-cache-dir` and apt lists
 are removed in the layers we control.
 
-## Recommendation
+## What the loader actually requires (measured 2026-10-31)
 
-A is the only large win, and it is the only one that touches the runtime: it
-needs its own change, a canary build and a GPU smoke, not a quiet edit. B can
-ride along in the same change. C stays open until the import audit is done.
+`readelf -d` on the torch 2.8.0 cu128 wheel, every library loaded at `import
+torch`:
+
+- `libtorch_cuda.so` NEEDS `libcudart.so.12`, `libcusparse.so.12`,
+  `libcufft.so.11`, `libcufile.so.0`, `libcusparseLt.so.0`, `libnccl.so.2`,
+  `libcurand.so.10`, `libcublas.so.12`, `libcublasLt.so.12`, `libcudnn.so.9`
+- `libtorch_cpu.so` NEEDS `libcupti.so.12`, `libcudart.so.12`
+- `libtorch_python.so` NEEDS `libcudnn.so.9`, `libcusparseLt.so.0`, `libcufile.so.0`
+- `libtorch_cuda_linalg.so` NEEDS `libcusolver.so.11`, `libcublas.so.12`,
+  `libcusparse.so.12`
+
+So no CUDA wheel can be dropped on a 12.5 base: every one of them is a hard
+dependency of a library the import loads. The only way out is to have the base
+provide the same CUDA version as the wheel, which is what the base image of a
+Cog build is for.
+
+## Decision taken (2026-10-31)
+
+1. `build.cuda` goes from `12.5` to `12.8`, the version the torch wheel is built
+   for. `r8.im/cog-base:cuda12.8-python3.13` exists; the GPU host runs driver
+   `610.43.02`, which covers CUDA 13.0, so 12.8 is well inside its range.
+2. `scripts/image_diet.py` removes, after installation, the `nvidia-*` wheels the
+   base already provides, `triton` (only used by `torch.compile`), and
+   `torch/include` + `torch/test`.
+3. Two wheels the base does NOT provide are kept and checked:
+   `nvidia-cusparselt-cu12` (`libcusparseLt.so.0`) and `nvidia-cufile-cu12`
+   (`libcufile.so.0`). The script aborts the build if either is missing instead
+   of shipping an image that cannot import torch.
+4. The build toolchain (gcc, make, `-dev` headers) is purged at the end, without
+   `autoremove`, which could cascade into the CUDA packages installed as
+   dependencies by the base.
+5. `LD_LIBRARY_PATH` points at the base CUDA (`/usr/local/cuda/lib64`) and the
+   system libraries, so the loader finds the libraries torch no longer carries.
+
+Expected: about 3.2 GB less (9.40 GB -> around 6.2 GB). The measured value is
+filled in below once the image is rebuilt by the publish workflow.
+
+## Measured after the change
+
+Pending the first build of the change (see `openspec/changes/image-cuda128-diet/`).

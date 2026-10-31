@@ -71,5 +71,61 @@ class TestCogYamlDeBaked(unittest.TestCase):
         )
 
 
+class TestImageDiet(unittest.TestCase):
+    """One CUDA in the image: 12.8 base + torch cu128, duplicate wheels removed.
+
+    Measured 2026-10-30: 9.40 GB, of which 3.06 GB were nvidia-* wheels that
+    duplicated the base image (4.5 GB) because the base was 12.5 while the torch
+    wheel is built for 12.8.
+    """
+
+    def setUp(self):
+        self.cfg = yaml.safe_load(COG_YAML.read_text())
+
+    def test_base_cuda_matches_the_torch_wheel(self):
+        self.assertEqual(
+            self.cfg["build"]["cuda"],
+            "12.8",
+            "the base CUDA must be the one the torch wheel is built for, "
+            "otherwise torch ships its own CUDA as nvidia-* wheels (double CUDA)",
+        )
+
+    def test_diet_step_is_applied(self):
+        run = self.cfg["build"]["run"]
+        diet = [c for c in run if "image_diet.py" in c and "--apply" in c]
+        self.assertEqual(len(diet), 1, "the post-install diet must run once, with --apply")
+
+    def test_toolchain_purge_never_autoremoves(self):
+        run = "\n".join(self.cfg["build"]["run"])
+        self.assertIn("apt-get purge", run, "the build toolchain must be purged")
+        self.assertNotIn(
+            "autoremove",
+            run,
+            "autoremove would be free to remove the CUDA packages the base image "
+            "installed as dependencies: purge explicit packages only",
+        )
+
+    def test_loader_finds_the_base_cuda(self):
+        env = self.cfg["environment"]
+        self.assertTrue(
+            any(e.startswith("LD_LIBRARY_PATH=") and "/usr/local/cuda/lib64" in e for e in env),
+            "with the nvidia-* wheels removed, the loader must be pointed at the base CUDA",
+        )
+
+    def test_requirements_still_pin_torch_and_forbid_the_ui_stack(self):
+        lines = [
+            ln.split("#")[0].strip()
+            for ln in (REPO_ROOT / "requirements.txt").read_text().splitlines()
+        ]
+        req = "\n".join(line for line in lines if line)
+        self.assertIn("torch==2.8.0", req)
+        for forbidden in ("gradio", "flask", "vllm"):
+            self.assertNotIn(
+                forbidden, req,
+                "the forbidden UI/serving stack must stay out of the installed "
+                "requirements (comments about them are fine)",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

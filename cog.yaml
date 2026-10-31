@@ -1,6 +1,9 @@
 build:
   # cog_runtime: true  # disabled: new runtime (coglet) only allows str/int/float/bool/Path/List in Output, not dict/list[dict]
-  cuda: "12.5"
+  # CUDA 12.8 = the CUDA the torch wheel is built for (cu128). With 12.5, torch
+  # installed its own 12.8 runtime as nvidia-* pip wheels on top of a 12.5 base:
+  # CUDA was shipped twice (4.5 GB base + 3.06 GB of wheels, measured 2026-10-30).
+  cuda: "12.8"
   gpu: true
   system_packages:
     - "gnupg"
@@ -14,15 +17,29 @@ build:
     - curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF4E48910A020E77056748B745738AE8480447DDF" | gpg --dearmor -o /usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg
     - echo "deb [signed-by=/usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg] http://ppa.launchpad.net/ubuntuhandbook1/ffmpeg6/ubuntu jammy main" > /etc/apt/sources.list.d/ubuntuhandbook1-ffmpeg6.list
     - apt-get update -qq && apt-get install -qqy --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+    # Image diet (docs/IMAGE_SIZE.md): the 12.8 base already provides cublas,
+    # cudnn, cusparse, cusolver, cufft, curand, nccl, nvrtc, nvtx, cupti. The diet
+    # drops the duplicate wheels plus triton and torch's headers/tests, and keeps
+    # the two wheels the base lacks (cusparselt, cufile) — it aborts loudly if
+    # either is missing, because libtorch_{python,cuda}.so need them at import.
+    - python3 /src/scripts/image_diet.py --apply
+    - ldconfig
+    # Build toolchain: needed to compile Python (pyenv) and the wheels, never at
+    # runtime. No autoremove after the purge: it could cascade into CUDA packages.
+    - apt-get purge -y --no-install-recommends build-essential gcc g++ make libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libncurses5-dev libncursesw5-dev tk-dev libffi-dev liblzma-dev xz-utils && apt-get clean && rm -rf /var/lib/apt/lists/*
     # E5 canary decision: NO weight baking. /models is a host bind mount
     # provisioned by scripts/provision.py against models.lock v2 (sha256 per
-    # file). This image is code-only (~2-3 GB instead of ~10+ GB).
-    # VAD is bundled in whisperx>=3.2 (whisperx/assets/pytorch_model.bin) —
-    # nothing to provision, arrives via pip.
+    # file). Weights stay out of the image; code + runtime measured at 9.40 GB on
+    # 2026-10-30, of which 3.06 GB was duplicated CUDA removed by the diet above.
+    # VAD is bundled in whisperx>=3.2 (whisperx/assets/pytorch_model.bin) — nothing
+    # to provision, arrives via pip.
 environment:
   # No offline flags (E5-LEGACY-HF): HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE
   # blocked the only legitimate network call — the gated pyannote download
   # on diarize (first run). Provisioned models are resolved from /models by
   # model_paths; anything missing downloads from HF with the container token.
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
+  # torch resolves cudart/cublas/cudnn/nccl from the base image once its own
+  # copies are removed by the diet step.
+  - "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
 predict: "predict.py:Predictor"
