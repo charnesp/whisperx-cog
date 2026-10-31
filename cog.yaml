@@ -31,7 +31,7 @@ build:
     # The loader must find the base CUDA libraries once torch's own copies are
     # gone. An `environment: LD_LIBRARY_PATH=...` entry is refused by cog
     # ("environment variable is not allowed"), hence the loader configuration file.
-    - printf '/usr/local/cuda/lib64\n/usr/lib/x86_64-linux-gnu\n' > /etc/ld.so.conf.d/zz-cuda-runtime.conf && ldconfig
+    - sh -c 'N=$(ls -d /root/.pyenv/versions/*/lib/python*/site-packages/nvidia/nccl/lib 2>/dev/null | head -1); if [ -n "$N" ]; then printf "%s\n" "$N" > /etc/ld.so.conf.d/00-nccl-wheel.conf; fi; printf "/usr/local/cuda/lib64\n/usr/lib/x86_64-linux-gnu\n" > /etc/ld.so.conf.d/zz-cuda-runtime.conf; ldconfig; ldconfig -p | grep -m1 libnccl'
     # Build-time guard: the diet removed libraries, so prove the import chain still
     # loads (no GPU needed: the point is the loader, not the device).
     - python3 -c "import torch, faster_whisper, qwen_asr; assert torch.__version__.startswith('2.8'), torch.__version__; print('import ok', torch.__version__, torch.version.cuda)"
