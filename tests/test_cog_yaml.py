@@ -156,17 +156,24 @@ if __name__ == "__main__":
 
 class InlineDietMatchesTheTestedScript(unittest.TestCase):
     """run steps execute before the source tree is copied into the image, so the
-    diet is inlined in cog.yaml. This test is what keeps the two copies honest."""
+    diet travels base64-encoded inside cog.yaml. This test keeps the two copies
+    honest: it decodes the payload and compares it with the tested script."""
 
-    def test_inline_block_is_the_script_byte_for_byte(self):
+    def test_encoded_payload_is_the_script_byte_for_byte(self):
+        import base64
+        import re as _re
         from pathlib import Path
         root = Path(__file__).resolve().parent.parent
-        script = (root / "scripts" / "image_diet.py").read_text().rstrip("\n")
+        script = (root / "scripts" / "image_diet.py").read_text()
         yaml_text = (root / "cog.yaml").read_text()
-        start = yaml_text.index("python3 - <<'PY'") + len("python3 - <<'PY'")
-        end = yaml_text.index("\n      PY", start)
-        inline = yaml_text[start:end]
-        inline = "\n".join(line[6:] if line.startswith("      ") else line
-                           for line in inline.split("\n")).strip("\n")
-        self.assertEqual(inline, script,
+        match = _re.search(r"b64decode\('([A-Za-z0-9+/=]+)'\)", yaml_text)
+        self.assertIsNotNone(match, "the diet payload is not in cog.yaml any more")
+        self.assertEqual(base64.b64decode(match.group(1)).decode(), script,
                          "cog.yaml and scripts/image_diet.py have drifted apart")
+
+    def test_payload_runs_with_apply(self):
+        """cog refuses a multi-line run command, hence the one-liner: it must pass
+        --apply itself, otherwise the build would silently do a dry run."""
+        from pathlib import Path
+        yaml_text = (Path(__file__).resolve().parent.parent / "cog.yaml").read_text()
+        self.assertIn("'--apply'", yaml_text)
