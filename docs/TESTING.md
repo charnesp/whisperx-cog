@@ -46,6 +46,21 @@ When authoring `tasks.md`:
 3. Group by feature slice, not “all impl then all tests”.
 4. Close with `make -f Makefile.harness check`.
 
+## Branch protection on `main`
+
+`main` is protected since 2026-10-31, administrators included:
+
+- no direct push: every change lands through a pull request (zero approvals required,
+  so a solo maintainer is not blocked)
+- required checks before merge: `harness` and `lock-audit`, on a branch up to date
+  with `main` (`strict`)
+- force pushes and deletions refused
+
+Why: production follows `ghcr.io/charnesp/whisperx-cog:latest`, which is published
+from `main`, so a red commit reaching `main` ends up on the GPU host. The publish
+workflow also gates the build on `make -f Makefile.harness ci` (`gate` job), which
+covers images built from feature branches.
+
 ## Related
 
 - [AGENTS.md](../AGENTS.md) — harness commands
