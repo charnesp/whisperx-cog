@@ -103,3 +103,19 @@ filled in below once the image is rebuilt by the publish workflow.
 ## Measured after the change
 
 Pending the first build of the change (see `openspec/changes/image-cuda128-diet/`).
+
+## Constraints found by building (2026-10-31)
+
+Each of these failed a build before being fixed; the import guard added after the
+diet is what surfaced the last one.
+
+- `environment: LD_LIBRARY_PATH=...` is refused by cog ("environment variable is
+  not allowed"): the base CUDA path is registered in
+  `/etc/ld.so.conf.d/zz-cuda-runtime.conf` before `ldconfig`.
+- `run` steps execute before the source tree is copied into the image
+  (`/src/scripts/image_diet.py: No such file or directory`), and cog refuses a
+  command spanning several lines: the diet travels base64-encoded on one line,
+  compared byte for byte with `scripts/image_diet.py` by a test.
+- `nvidia/nccl` cannot be removed even though the base ships libnccl.so.2: the
+  base version is too old for torch 2.8.0 and `libtorch_cuda.so` then reports
+  `undefined symbol: ncclCommWindowRegister`.

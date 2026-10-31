@@ -25,8 +25,13 @@ What is KEPT, and why it is checked
 `nvidia/cusparselt` and `nvidia/cufile` are NOT in the base image, but
 libtorch_python.so needs libcusparseLt.so.0 and libtorch_cuda.so needs
 libcufile.so.0 at import time (readelf -d, 2026-10-31). Removing them breaks
-`import torch`. Their absence therefore aborts the build instead of shipping a
-broken image.
+`import torch`.
+
+`nvidia/nccl` IS in the base image, but in a version too old for torch 2.8.0:
+the build failed with `libtorch_cuda.so: undefined symbol: ncclCommWindowRegister`
+(measured 2026-10-31, after the diet). The base copy cannot replace the wheel.
+
+Their absence therefore aborts the build instead of shipping a broken image.
 
 Usage
 -----
@@ -61,7 +66,7 @@ REMOVE_NVIDIA = (
 )
 
 # Absent from the base image and needed at import: never remove.
-KEEP_NVIDIA = ("cusparselt", "cufile")
+KEEP_NVIDIA = ("nccl", "cusparselt", "cufile")
 
 REMOVE_PACKAGES = ("triton",)
 REMOVE_TORCH_SUBDIRS = ("include", "test")
