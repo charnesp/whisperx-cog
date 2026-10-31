@@ -72,3 +72,18 @@ turn into a mystery at import.
 - Purging `-dev` packages removes the ability to compile CUDA extensions inside
   the image. Nothing builds extensions at runtime; if it ever does, the build
   must be changed, not the runtime patched.
+
+## Loader configuration (decided 2026-10-31, after a failed build)
+
+The first attempt declared `LD_LIBRARY_PATH=/usr/local/cuda/lib64` in
+`environment`. The image build failed: `environment variable "LD_LIBRARY_PATH" is
+not allowed` — cog validates the `environment` block and refuses loader variables
+(it rewrites process environments itself). The base CUDA path is therefore
+registered in a loader configuration file, written in `run` before `ldconfig`:
+
+```
+printf '/usr/local/cuda/lib64\n/usr/lib/x86_64-linux-gnu\n' > /etc/ld.so.conf.d/zz-cuda-runtime.conf && ldconfig
+```
+
+This survives in the image, needs no environment variable, and is asserted by two
+tests: the configuration file is written, and no refused variable is declared.
