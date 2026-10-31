@@ -138,13 +138,12 @@ class SpeakerLabels(unittest.TestCase):
 
 class MergeAndIdempotence(unittest.TestCase):
     def test_adjacent_turns_of_same_speaker_are_merged_across_windows(self):
-        first = {"start": 0.0, "end": 1.0, "text": "un", "speaker": "S0",
-                 "words": [word("un", 0.0, 1.0, "S0")]}
-        second = {"start": 1.2, "end": 2.0, "text": "deux", "speaker": "S0",
-                  "words": [word("deux", 1.2, 2.0, "S0")]}
+        """Only turns produced by a split are merged: a window left whole carries
+        its dominant-speaker label and must not be widened by its neighbour."""
+        first = segment("un a", [word("un", 0.0, 1.0, "S1"), word("a", 1.0, 2.0, "S0")])
+        second = segment("b deux", [word("b", 2.2, 3.0, "S0"), word("deux", 3.0, 4.0, "S1")])
         out, _ = resegment_segments([first, second])
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["text"], "un deux")
+        self.assertEqual([s["text"] for s in out], ["un", "a b", "deux"])
 
     def test_long_gap_prevents_merge(self):
         first = {"start": 0.0, "end": 1.0, "text": "un", "speaker": "S0",

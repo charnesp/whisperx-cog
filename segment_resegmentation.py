@@ -139,6 +139,15 @@ def _spans(text: str, words: list[dict]):
     return [(s, e) for s, e in spans]
 
 
+def _bound(word: dict, key: str, fallback):
+    """A number, or the window bound. None stays None: the caller then keeps the
+    block whole rather than emit a segment the bridge cannot convert."""
+    value = word.get(key)
+    if isinstance(value, (int, float)):
+        return value
+    return fallback if isinstance(fallback, (int, float)) else None
+
+
 def _with_chars(segment: dict) -> dict:
     """Every returned segment carries `chars`, so consumers need no special case."""
     if "chars" in segment:
@@ -204,23 +213,31 @@ def resegment_segments(segments: list[dict], stats: dict | None = None):
 
         index = 0
         pieces = []
+        bounds_ok = True
         for run in runs:
             first = index
             index += len(run["words"])
             piece_text = text[spans[first][0]:spans[index - 1][1]].strip()
+            start = _bound(run["words"][0], "start", seg.get("start"))
+            end = _bound(run["words"][-1], "end", seg.get("end"))
+            if start is None or end is None:
+                bounds_ok = False
+                break
             pieces.append({
-                "start": run["words"][0].get("start", seg.get("start", 0.0)),
-                "end": run["words"][-1].get("end", seg.get("end", 0.0)),
+                "start": start,
+                "end": end,
                 "text": piece_text,
                 "chars": len(piece_text),
                 "speaker": run["speaker"],
                 "words": run["words"],
+                "_split": True,
             })
 
         # Second guard: the turns must render exactly the original characters,
-        # and no turn may be empty.
+        # no turn may be empty, and every turn must carry usable bounds (the
+        # bridge compares and converts them).
         rebuilt = " ".join(p["text"] for p in pieces)
-        if any(not p["text"] for p in pieces) or \
+        if not bounds_ok or any(not p["text"] for p in pieces) or \
                 re.sub(r"\s+", "", rebuilt) != re.sub(r"\s+", "", text):
             counters["ambiguous"] += 1
             out.append(_with_chars(dict(seg, words=words)))
@@ -234,7 +251,8 @@ def resegment_segments(segments: list[dict], stats: dict | None = None):
     merged: list[dict] = []
     for piece in out:
         prev = merged[-1] if merged else None
-        if (prev is not None and prev.get("speaker") == piece.get("speaker")
+        if (prev is not None and prev.get("_split") and piece.get("_split")
+                and prev.get("speaker") == piece.get("speaker")
                 and piece.get("start", 0.0) - prev.get("end", 0.0) <= MERGE_GAP_S
                 and piece.get("end", 0.0) - prev.get("start", 0.0) <= MAX_TURN_S
                 and "words" in prev and "words" in piece):
@@ -244,6 +262,9 @@ def resegment_segments(segments: list[dict], stats: dict | None = None):
             prev["words"] = prev["words"] + piece["words"]
             continue
         merged.append(dict(piece))
+
+    for piece in merged:
+        piece.pop("_split", None)
 
     counters["out"] = len(merged)
     if stats is not None:

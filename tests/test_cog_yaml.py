@@ -153,3 +153,20 @@ class TestImageDiet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class InlineDietMatchesTheTestedScript(unittest.TestCase):
+    """run steps execute before the source tree is copied into the image, so the
+    diet is inlined in cog.yaml. This test is what keeps the two copies honest."""
+
+    def test_inline_block_is_the_script_byte_for_byte(self):
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        script = (root / "scripts" / "image_diet.py").read_text().rstrip("\n")
+        yaml_text = (root / "cog.yaml").read_text()
+        start = yaml_text.index("python3 - <<'PY'") + len("python3 - <<'PY'")
+        end = yaml_text.index("\n      PY", start)
+        inline = yaml_text[start:end]
+        inline = "\n".join(line[6:] if line.startswith("      ") else line
+                           for line in inline.split("\n")).strip("\n")
+        self.assertEqual(inline, script,
+                         "cog.yaml and scripts/image_diet.py have drifted apart")

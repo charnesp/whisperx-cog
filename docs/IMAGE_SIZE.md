@@ -28,7 +28,7 @@ The pip layer is 48 % of the image on its own, and it is almost entirely CUDA:
 | `nvidia-nccl-cu12` | 0.35 GB |
 | `nvidia-cusparselt-cu12` | 0.24 GB |
 | `nvidia-cufft-cu12` | 0.20 GB |
-| other `nvidia-*` | 0.13 GB |
+| other `nvidia-*` (remainder to the measured 3.057 GB) | 0.214 GB |
 | **total torch + nvidia** | **3.94 GB** |
 
 ## The finding

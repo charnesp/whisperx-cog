@@ -12,6 +12,11 @@ on:
       - ".github/workflows/harness-audit.yml"
       - "tests/**"
       - "scripts/**"
+      - "*.py"
+      - "docs/**"
+      - "openspec/**"
+      - "requirements.txt"
+      - "cog.yaml"
       - "Makefile.harness"
   workflow_dispatch:
 

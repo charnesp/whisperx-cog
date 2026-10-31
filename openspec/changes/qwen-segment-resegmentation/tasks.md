@@ -34,7 +34,10 @@ Strict TDD per `docs/TESTING.md`: every behaviour is listed test-first.
 ## 4. Verification before done
 
 - [x] 4.1 `make -f Makefile.harness check` green
-- [ ] 4.2 `make -f Makefile.harness ci` green (lint, pkg-audit, audit)
+- [x] 4.2 `make -f Makefile.harness ci` green (lint, pkg-audit, audit) —
+  `EXIT=0`, 621 tests on 2026-10-31, with `pip-audit` installed in the workspace;
+  note: the GitHub workflow was red for an unrelated reason (missing `numpy`)
+  from 2026-10-20 until 970ecc8 fixed it
 - [ ] 4.3 GPU smoke on a real recording: compare segment count and per-speaker
   talk time against the previous output (manual, per docs/TESTING.md)
 - [ ] 4.4 Deploy: image rebuild + canary, then production (operator decision)
@@ -52,3 +55,15 @@ Strict TDD per `docs/TESTING.md`: every behaviour is listed test-first.
 - [x] 5.4 `tests/test_segment_resegmentation_property.py`: 300 random windows and
   100 idempotence cases
 - [x] 5.5 `make -f Makefile.harness check` green (612 tests)
+
+## 6. Second review round (2026-10-31)
+
+- [x] 6.1 RED: merge only between turns produced by a split (an untouched window
+  keeps its dominant-speaker label, gluing it widens a wrong attribution); two
+  short monologue windows stay two; an ambiguous block is not absorbed
+- [x] 6.2 RED: a word without `start`/`end` falls back to the window bound, and a
+  window without bounds keeps the block whole (the bridge compares and converts
+  those bounds: `None` was a 500)
+- [x] 6.3 Predictor logs the number of windows kept whole
+- [x] 6.4 Workflow paths cover root `*.py`, `docs/`, `openspec/`, `cog.yaml`
+- [x] 6.5 `docs/TESTING.md` lists `numpy`; `docs/IMAGE_SIZE.md` wheel table adds up
