@@ -126,6 +126,17 @@ class TestImageDiet(unittest.TestCase):
                 "requirements (comments about them are fine)",
             )
 
+    def test_build_fails_if_the_import_chain_breaks(self):
+        run = "\n".join(self.cfg["build"]["run"])
+        self.assertIn(
+            "import torch",
+            run,
+            "the build must prove that torch still imports after the diet removed "
+            "the CUDA wheels; without it a missing library ships silently and only "
+            "fails at the first prediction",
+        )
+        self.assertIn("torch.version.cuda", run, "the build log must show the CUDA the engine loads against")
+
 
 if __name__ == "__main__":
     unittest.main()

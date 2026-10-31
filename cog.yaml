@@ -24,6 +24,9 @@ build:
     # either is missing, because libtorch_{python,cuda}.so need them at import.
     - python3 /src/scripts/image_diet.py --apply
     - ldconfig
+    # Build-time guard: the diet removed libraries, so prove the import chain still
+    # loads (no GPU needed: the point is the loader, not the device).
+    - python3 -c "import torch, faster_whisper, qwen_asr; assert torch.__version__.startswith('2.8'), torch.__version__; print('import ok', torch.__version__, torch.version.cuda)"
     # Build toolchain: needed to compile Python (pyenv) and the wheels, never at
     # runtime. No autoremove after the purge: it could cascade into CUDA packages.
     - apt-get purge -y --no-install-recommends build-essential gcc g++ make libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libncurses5-dev libncursesw5-dev tk-dev libffi-dev liblzma-dev xz-utils && apt-get clean && rm -rf /var/lib/apt/lists/*
