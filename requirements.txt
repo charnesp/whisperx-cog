@@ -1,7 +1,5 @@
 ffmpeg-python
-# torch is NOT listed here: installed in cog.yaml's run step with --no-deps, so the
-# 14 nvidia-* wheels (3.06 GB, measured 2026-10-31) are not stacked on a CUDA base
-# that already ships them. Pinned there: torch==2.8.0.
+torch==2.8.0
 # Fork of m-bain/whisperX: upstream PR #1401 (qwen3-asr backend) + context patch (branch qwen3-asr)
 whisperx @ git+https://github.com/charnesp/whisperX@c49b26379f40863767e3c42d9afed5dc4221f54f
 # qwen-asr must be installed WITHOUT its transitive deps: gradio/flask/vllm are forbidden
