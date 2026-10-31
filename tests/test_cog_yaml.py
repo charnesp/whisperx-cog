@@ -125,18 +125,32 @@ class TestImageDiet(unittest.TestCase):
             "LD_LIBRARY_PATH in environment makes cog refuse the build",
         )
 
-    def test_requirements_still_pin_torch_and_forbid_the_ui_stack(self):
+    def test_torch_is_installed_without_the_duplicate_cuda_wheels(self):
         lines = [
             ln.split("#")[0].strip()
             for ln in (REPO_ROOT / "requirements.txt").read_text().splitlines()
         ]
         req = "\n".join(line for line in lines if line)
-        self.assertIn("torch==2.8.0", req)
+        self.assertNotIn(
+            "torch==", req,
+            "torch in requirements.txt pulls 14 nvidia-* wheels (3.06 GB) that the "
+            "CUDA base already ships; it is installed with --no-deps in `run`",
+        )
         for forbidden in ("gradio", "flask", "vllm"):
             self.assertNotIn(
                 forbidden, req,
                 "the forbidden UI/serving stack must stay out of the installed "
                 "requirements (comments about them are fine)",
+            )
+        run = "\n".join(self.cfg["build"]["run"])
+        self.assertIn("--no-deps", run, "torch must be installed without its wheel set")
+        self.assertIn("torch==2.8.0", run, "the torch pin must live in `run`")
+        for needed in ("nvidia-nccl-cu12==2.27.3", "nvidia-cusparselt-cu12",
+                       "nvidia-cufile-cu12"):
+            self.assertIn(
+                needed, run,
+                "these three libraries are the ones the base does not provide and "
+                "libtorch_{cuda,python}.so load at import",
             )
 
     def test_build_fails_if_the_import_chain_breaks(self):

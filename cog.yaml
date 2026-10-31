@@ -17,6 +17,14 @@ build:
     - curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF4E48910A020E77056748B745738AE8480447DDF" | gpg --dearmor -o /usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg
     - echo "deb [signed-by=/usr/share/keyrings/ubuntuhandbook1-ffmpeg6.gpg] http://ppa.launchpad.net/ubuntuhandbook1/ffmpeg6/ubuntu jammy main" > /etc/apt/sources.list.d/ubuntuhandbook1-ffmpeg6.list
     - apt-get update -qq && apt-get install -qqy --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+    # torch is installed HERE, not in requirements.txt (measured 2026-10-31): the
+    # default index drags 14 nvidia-* wheels (3.06 GB) on top of a base that already
+    # ships the same CUDA runtime, and deleting them afterwards saves nothing because
+    # a later layer only hides bytes. --no-deps keeps the three libraries the base
+    # does not provide (nccl 2.27.3, the version libtorch_cuda.so needs; cusparselt;
+    # cufile) plus torch's small pure-python deps. The import guard below is what
+    # proves the loader finds every shared object.
+    - pip install --no-deps --no-cache-dir torch==2.8.0 && pip install --no-cache-dir "filelock" "typing-extensions>=4.10.0" "setuptools" "sympy>=1.13.3" "networkx" "jinja2" "fsspec" "nvidia-nccl-cu12==2.27.3" "nvidia-cusparselt-cu12==0.7.1" "nvidia-cufile-cu12"
     # Image diet (docs/IMAGE_SIZE.md): the 12.8 base already provides cublas,
     # cudnn, cusparse, cusolver, cufft, curand, nccl, nvrtc, nvtx, cupti. The diet
     # drops the duplicate wheels plus triton and torch's headers/tests, and keeps
