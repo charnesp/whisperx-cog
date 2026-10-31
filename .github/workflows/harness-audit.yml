@@ -27,8 +27,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps (pyyaml requests ruff pip-audit)
-        run: pip install pyyaml requests ruff pip-audit
+      - name: Install deps (pyyaml requests numpy ruff pip-audit)
+        # numpy: four harness tests import it (qwen_split energy vectorisation,
+        # qwen remote silence guard, quiet chunking, recovery budget). Absent
+        # from this job until now, which made `make -f Makefile.harness ci`
+        # fail on main from 2026-10-20 with ModuleNotFoundError: numpy.
+        run: pip install pyyaml requests numpy ruff pip-audit
 
       - name: Run harness CI
         run: make -f Makefile.harness ci
