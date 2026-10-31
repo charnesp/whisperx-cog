@@ -60,7 +60,6 @@ REMOVE_NVIDIA = (
     "curand",
     "cusolver",
     "cusparse",
-    "nccl",
     "nvjitlink",
     "nvtx",
 )

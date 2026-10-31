@@ -64,7 +64,9 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.exists("nvidia", "cublas"))
         self.assertFalse(self.exists("nvidia", "cudnn"))
-        self.assertFalse(self.exists("nvidia", "nccl"))
+        # nccl stays: the base image ships libnccl.so.2 but in a version torch
+        # 2.8.0 refuses (undefined symbol: ncclCommWindowRegister, measured).
+        self.assertTrue(self.exists("nvidia", "nccl"))
 
     def test_wheels_the_base_image_lacks_are_kept(self):
         r = self.run_script("--apply")
