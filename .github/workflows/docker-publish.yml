@@ -19,7 +19,29 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  # The image published as :latest from main is deployed straight to production,
+  # so the same gate as `Harness audit` runs first and the build waits for it.
+  # Until 2026-10-31 the workflow pushed whatever compiled: a commit whose tests
+  # and lint were red still published an image (run on ce7a261b).
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps (pyyaml requests numpy ruff pip-audit)
+        run: pip install pyyaml requests numpy ruff pip-audit
+
+      - name: Run harness CI
+        run: make -f Makefile.harness ci
+
   build-and-push:
+    needs: gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
