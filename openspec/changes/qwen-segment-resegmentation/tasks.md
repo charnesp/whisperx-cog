@@ -38,3 +38,17 @@ Strict TDD per `docs/TESTING.md`: every behaviour is listed test-first.
 - [ ] 4.3 GPU smoke on a real recording: compare segment count and per-speaker
   talk time against the previous output (manual, per docs/TESTING.md)
 - [ ] 4.4 Deploy: image rebuild + canary, then production (operator decision)
+
+## 5. Cold review round (2026-10-31)
+
+- [x] 5.1 RED: `tests/test_resegmentation_review.py` — merge must not swallow
+  monologue windows, tokens spanning two words (`allez-vous`, `l'homme`), words
+  with no alphanumeric content, `chars` on every segment, counters reaching the
+  caller (9 tests)
+- [x] 5.2 GREEN: merge capped at `MAX_TURN_S` (30 s), one token may cover up to
+  three words, content-less words inherit a neighbour span, coverage computed on
+  the union of spans, empty turn = block kept whole
+- [x] 5.3 Predictor logs untouched windows instead of hiding them
+- [x] 5.4 `tests/test_segment_resegmentation_property.py`: 300 random windows and
+  100 idempotence cases
+- [x] 5.5 `make -f Makefile.harness check` green (612 tests)

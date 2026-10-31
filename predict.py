@@ -628,7 +628,15 @@ class Predictor(BasePredictor):
                 # their speaker. On any failure the raw segments are kept and the
                 # reason is logged: a prediction must never fail for this.
                 try:
-                    result = resegment_result(result)
+                    stats: dict = {}
+                    result = resegment_result(result, stats)
+                    if stats.get("ambiguous"):
+                        print(
+                            "segment resegmentation: "
+                            f"{stats['ambiguous']}/{stats['in']} windows kept whole "
+                            "(word/text alignment not exact)",
+                            flush=True,
+                        )
                 except Exception as exc:  # noqa: BLE001 - keep the prediction alive
                     print(
                         f"segment resegmentation skipped: {type(exc).__name__}: {exc}",

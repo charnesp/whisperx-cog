@@ -23,6 +23,21 @@ label).
 - **WHEN** every word of a window carries the same speaker
 - **THEN** exactly one segment is returned, with the original text
 
+#### Scenario: A monologue spanning several windows
+
+- **WHEN** five consecutive windows carry one speaker and no silence between them
+- **THEN** five segments are returned, not one long block: adjacent turns of the same speaker are only merged when the gap is under 0.8 s AND the merged turn stays within one audio window (30 s)
+
+#### Scenario: A turn cut by a window boundary
+
+- **WHEN** a turn of the same speaker continues in the next window after less than 0.8 s of silence
+- **THEN** the two parts are merged into one segment, because the cut came from the audio windowing, not from the conversation
+
+#### Scenario: Every segment carries its character count
+
+- **WHEN** any segment is returned, split or not
+- **THEN** it carries `chars`, its number of characters, so a consumer needs no special case
+
 #### Scenario: Window without words
 
 - **WHEN** a segment carries no words
@@ -51,6 +66,19 @@ string).
 
 - **WHEN** a segment's `words` is a list of strings
 - **THEN** the helper raises `TypeError`
+
+### Requirement: Windows left whole are reported
+
+A window whose word/text alignment is not exact SHALL be returned untouched, and
+the number of such windows SHALL be logged by the predictor as
+`segment resegmentation: N/M windows kept whole (word/text alignment not exact)`.
+A run where the re-segmentation did nothing SHALL NOT be indistinguishable from a
+run where it succeeded.
+
+#### Scenario: Inexact alignment
+
+- **WHEN** a window's text cannot be mapped to its words
+- **THEN** the window is returned untouched and the count of untouched windows is logged
 
 ### Requirement: Guarded wiring in the prediction path
 

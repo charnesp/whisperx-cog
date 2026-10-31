@@ -65,9 +65,11 @@ _FAKE_AUDIO = [0.0] * 160000  # 10 s at 16 kHz
 WINDOWS = [(0.0, 2.0, [0.1, 0.2]), (2.5, 4.0, [0.3, 0.4])]
 WINDOW_TEXTS = ["bonjour", "le monde"]
 WINDOW_LANGS = ["fr", "fr"]  # server-detected language per window (VAD order)
+# `chars` is part of the segment contract: resegmentation returns every segment
+# with its character count, including segments it did not split.
 EXPECTED_SEGMENTS = [
-    {"text": "bonjour", "start": 0.0, "end": 2.0},
-    {"text": "le monde", "start": 2.5, "end": 4.0},
+    {"text": "bonjour", "start": 0.0, "end": 2.0, "chars": 7},
+    {"text": "le monde", "start": 2.5, "end": 4.0, "chars": 8},
 ]
 
 def _asr_qwen_stub():
@@ -102,7 +104,8 @@ QWEN_ARGS = dict(
 
 
 def _local_result():
-    return {"language": "fr", "segments": [{"text": "local", "start": 0.0, "end": 1.0}]}
+    return {"language": "fr",
+            "segments": [{"text": "local", "start": 0.0, "end": 1.0, "chars": 5}]}
 
 
 class _RemoteBranchBase(unittest.TestCase):

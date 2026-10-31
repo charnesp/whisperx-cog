@@ -13,8 +13,8 @@ speaker turns instead of audio windows, and redistributes the punctuated window
 text over those turns.
 
 Punctuation lives on the segment text, not on the words, so the text is sliced
-by matching each timestamped word to its token in the text. Any segment whose
-word/token alignment is not exact is left untouched: never invent, never
+by matching each timestamped word to its token in the text. Any window whose
+word/token alignment is not exact is returned untouched: never invent, never
 truncate. Pure Python, stdlib only, no torch: unit-tested on plain dicts.
 """
 
@@ -23,9 +23,17 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# Merge two consecutive turns of the same speaker when the silence between them
-# is shorter than this: avoids fragmenting one turn at every audio window.
+# Two consecutive turns of the same speaker are merged when the silence between
+# them is short, so a turn is not cut at every audio window boundary.
 MERGE_GAP_S = 0.8
+
+# ... but a merge never produces a turn longer than one audio window: a long
+# monologue stays a series of normal segments, not one 25-minute block.
+MAX_TURN_S = 30.0
+
+# How many words one text token may cover: "allez" + "-vous" for "allez-vous",
+# "l'" + "homme" for "l'homme".
+MAX_WORDS_PER_TOKEN = 3
 
 
 def normalize(token: str) -> str:
@@ -36,82 +44,122 @@ def normalize(token: str) -> str:
 
 
 def _spans(text: str, words: list[dict]):
-    """Map each timestamped word to its character span in `text`.
+    """Map each word to its (start, end) character span in `text`.
 
-    Returns a list of (start, end) with one entry per word, or None when the
-    mapping is not exact (a significant token without a word, a word that does
-    not match its token, or a character left uncovered).
+    Returns one span per word, or None when the mapping is not exact: a token
+    with no matching word, a group of words that does not spell the token, or a
+    group whose words belong to different speakers.
 
-    Detached punctuation never consumes a word: it is attached to the previous
-    turn, or to the next one when no word has been placed yet (leading
-    punctuation). Punctuation after the last word is attached to the last turn;
-    without that, a detached final question mark would silently disappear.
+    Rules:
+    - a word with no alphanumeric content (a lone "?", a dash) takes no text and
+      inherits the span of its neighbour;
+    - one text token may cover up to MAX_WORDS_PER_TOKEN words, which is how
+      hyphenation ("allez-vous") and elision ("l'homme") are handled;
+    - punctuation detached in the text attaches to the previous word, or to the
+      next one at the start of the window; after the last word it attaches to the
+      last turn, so a detached final "?" never vanishes.
     """
-    spans: list[tuple[int, int]] = []
+    count = len(words)
+    spans: list = [None] * count
     pos = 0
-    lead_start = None
-    for w in words:
-        want = normalize(w.get("word", ""))
-        if not want:
+    lead = None
+    index = 0
+
+    while index < count:
+        if not normalize(words[index].get("word", "")):
+            index += 1
+            continue
+
+        match = re.search(r"\S+", text[pos:])
+        if not match:
             return None
-        matched = None
-        while pos < len(text):
-            m = re.search(r"\S+", text[pos:])
-            if not m:
-                break
-            start = pos + m.start()
-            end = pos + m.end()
-            pos = end
-            got = normalize(text[start:end])
-            if not got:
-                if spans:
-                    spans[-1] = (spans[-1][0], end)
-                elif lead_start is None:
-                    lead_start = start
+        start, end = pos + match.start(), pos + match.end()
+        pos = end
+        token = normalize(text[start:end])
+        if not token:
+            placed = [i for i in range(index) if spans[i] is not None]
+            if placed:
+                last = placed[-1]
+                spans[last] = [spans[last][0], end]
+            else:
+                lead = start if lead is None else lead
+            continue
+
+        for width in range(1, MAX_WORDS_PER_TOKEN + 1):
+            if index + width > count:
+                return None if width == 1 else None
+            group = words[index:index + width]
+            if any(not normalize(w.get("word", "")) for w in group):
                 continue
-            if got != want:
+            if "".join(normalize(w.get("word", "")) for w in group) != token:
+                continue
+            if len({w.get("speaker") for w in group}) > 1:
                 return None
-            matched = (lead_start if (not spans and lead_start is not None) else start, end)
-            lead_start = None
+            for i in range(index, index + width):
+                spans[i] = [start, end]
+            if lead is not None:
+                spans[index] = [lead, end]
+                lead = None
+            index += width
             break
-        if matched is None:
+        else:
             return None
-        spans.append(matched)
+
+    # Words with no content: inherit the previous span, else the next one.
+    for i in range(count):
+        if spans[i] is None:
+            previous = next((spans[j] for j in range(i - 1, -1, -1) if spans[j]), None)
+            following = next((spans[j] for j in range(i + 1, count) if spans[j]), None)
+            spans[i] = list(previous or following or [0, 0])
+    if not any(spans):
+        return None
 
     # Detached punctuation after the last word.
     while pos < len(text):
-        m = re.search(r"\S+", text[pos:])
-        if not m:
+        match = re.search(r"\S+", text[pos:])
+        if not match:
             break
-        start = pos + m.start()
-        end = pos + m.end()
+        start, end = pos + match.start(), pos + match.end()
         pos = end
         if normalize(text[start:end]):
             return None
-        if not spans:
-            return None
-        spans[-1] = (spans[-1][0], end)
+        spans[-1][1] = end
 
-    # Exact coverage: whitespace removed, every other character must be covered.
-    covered = re.sub(r"\s+", "", "".join(text[s:e] for s, e in spans))
+    # Coverage over the union of the spans: a group of words shares one span, so
+    # concatenating per word would count it twice.
+    ordered = []
+    for start, end in spans:
+        if ordered and start < ordered[-1][1]:
+            ordered[-1] = (ordered[-1][0], max(ordered[-1][1], end))
+        else:
+            ordered.append((start, end))
+    covered = re.sub(r"\s+", "", "".join(text[s:e] for s, e in ordered))
     if covered != re.sub(r"\s+", "", text):
         return None
-    return spans
+    return [(s, e) for s, e in spans]
 
 
-def resegment_segments(segments: list[dict]) -> tuple[list[dict], dict]:
+def _with_chars(segment: dict) -> dict:
+    """Every returned segment carries `chars`, so consumers need no special case."""
+    if "chars" in segment:
+        return segment
+    return dict(segment, chars=len(segment.get("text") or ""))
+
+
+def resegment_segments(segments: list[dict], stats: dict | None = None):
     """Split segments at speaker changes.
 
     Doubtful content is left untouched (no exception); a MALFORMED entry does
-    raise TypeError (words must be dicts, text must be a string).
+    raise TypeError (words must be dicts, text must be a string). When `stats` is
+    given, it receives the counters of the run.
     """
-    stats = {"in": len(segments), "out": 0, "split": 0, "no_words": 0,
-             "ambiguous": 0, "single_speaker": 0,
-             "words_in": 0, "words_out": 0}
+    counters = {"in": len(segments), "out": 0, "split": 0, "no_words": 0,
+                "ambiguous": 0, "single_speaker": 0,
+                "words_in": 0, "words_out": 0}
     out: list[dict] = []
     for seg in segments:
         raw_words = seg.get("words") or []
-        stats["words_in"] += len(raw_words)
+        counters["words_in"] += len(raw_words)
         text = seg.get("text") or ""
         if not isinstance(text, str) or any(not isinstance(w, dict) for w in raw_words):
             raise TypeError("malformed segment: words must be a list of dicts, text a string")
@@ -119,17 +167,16 @@ def resegment_segments(segments: list[dict]) -> tuple[list[dict], dict]:
         # A word without a label inherits the previous word's speaker (temporal
         # continuity), else the segment label; the inherited label is WRITTEN
         # into the word: the contract is that every word carries its speaker.
-        seg_speaker = seg.get("speaker")
         words = []
-        current = seg_speaker
+        current = seg.get("speaker")
         for w in raw_words:
             sp = w.get("speaker") or current
             current = sp
             words.append(dict(w, speaker=sp))
         if not words or not any(w.get("speaker") for w in words):
-            stats["no_words"] += 1
-            out.append(seg)
-            stats["words_out"] += len(words)
+            counters["no_words"] += 1
+            out.append(_with_chars(seg))
+            counters["words_out"] += len(words)
             continue
 
         runs = []
@@ -141,18 +188,18 @@ def resegment_segments(segments: list[dict]) -> tuple[list[dict], dict]:
                 runs.append({"speaker": sp, "words": [w]})
 
         if len(runs) < 2:
-            stats["single_speaker"] += 1
-            out.append(dict(seg, words=words))
-            stats["words_out"] += len(words)
+            counters["single_speaker"] += 1
+            out.append(_with_chars(dict(seg, words=words)))
+            counters["words_out"] += len(words)
             continue
 
         spans = _spans(text, words) if text.strip() else None
         if not text.strip() or spans is None:
             # No text to distribute (or inexact alignment): keep the block whole
             # rather than emit empty turns.
-            stats["ambiguous"] += 1
-            out.append(dict(seg, words=words))
-            stats["words_out"] += len(words)
+            counters["ambiguous"] += 1
+            out.append(_with_chars(dict(seg, words=words)))
+            counters["words_out"] += len(words)
             continue
 
         index = 0
@@ -160,9 +207,7 @@ def resegment_segments(segments: list[dict]) -> tuple[list[dict], dict]:
         for run in runs:
             first = index
             index += len(run["words"])
-            piece_text = ""
-            if spans is not None:
-                piece_text = text[spans[first][0]:spans[index - 1][1]].strip()
+            piece_text = text[spans[first][0]:spans[index - 1][1]].strip()
             pieces.append({
                 "start": run["words"][0].get("start", seg.get("start", 0.0)),
                 "end": run["words"][-1].get("end", seg.get("end", 0.0)),
@@ -172,16 +217,18 @@ def resegment_segments(segments: list[dict]) -> tuple[list[dict], dict]:
                 "words": run["words"],
             })
 
-        # Second guard: the turns must render exactly the original characters.
+        # Second guard: the turns must render exactly the original characters,
+        # and no turn may be empty.
         rebuilt = " ".join(p["text"] for p in pieces)
-        if re.sub(r"\s+", "", rebuilt) != re.sub(r"\s+", "", text):
-            stats["ambiguous"] += 1
-            out.append(dict(seg, words=words))
-            stats["words_out"] += len(words)
+        if any(not p["text"] for p in pieces) or \
+                re.sub(r"\s+", "", rebuilt) != re.sub(r"\s+", "", text):
+            counters["ambiguous"] += 1
+            out.append(_with_chars(dict(seg, words=words)))
+            counters["words_out"] += len(words)
             continue
 
-        stats["split"] += 1
-        stats["words_out"] += len(words)
+        counters["split"] += 1
+        counters["words_out"] += len(words)
         out.extend(pieces)
 
     merged: list[dict] = []
@@ -189,6 +236,7 @@ def resegment_segments(segments: list[dict]) -> tuple[list[dict], dict]:
         prev = merged[-1] if merged else None
         if (prev is not None and prev.get("speaker") == piece.get("speaker")
                 and piece.get("start", 0.0) - prev.get("end", 0.0) <= MERGE_GAP_S
+                and piece.get("end", 0.0) - prev.get("start", 0.0) <= MAX_TURN_S
                 and "words" in prev and "words" in piece):
             prev["end"] = piece.get("end", prev.get("end", 0.0))
             prev["text"] = (prev.get("text", "") + " " + piece.get("text", "")).strip()
@@ -197,22 +245,25 @@ def resegment_segments(segments: list[dict]) -> tuple[list[dict], dict]:
             continue
         merged.append(dict(piece))
 
-    stats["out"] = len(merged)
-    return merged, stats
+    counters["out"] = len(merged)
+    if stats is not None:
+        stats.update(counters)
+    return merged, counters
 
 
-def resegment_result(result: dict) -> dict:
+def resegment_result(result: dict, stats: dict | None = None) -> dict:
     """Return a copy of a prediction result with segments rebuilt per speaker turn.
 
-    A result without segments, or without any speaker information, comes back
-    unchanged. The input dict is never mutated.
+    A result without segments comes back unchanged. The input dict is never
+    mutated. When `stats` is given, the counters of the run are written into it so
+    the caller can report windows left whole instead of hiding them.
     """
     if not isinstance(result, dict):
         raise TypeError("result must be a dict")
     segments = result.get("segments")
     if not isinstance(segments, list) or not segments:
         return result
-    new_segments, _ = resegment_segments(segments)
+    new_segments, _ = resegment_segments(segments, stats)
     new = dict(result)
     new["segments"] = new_segments
     return new

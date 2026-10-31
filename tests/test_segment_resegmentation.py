@@ -60,7 +60,10 @@ class SplitAtSpeakerChange(unittest.TestCase):
     def test_window_without_words_is_untouched(self):
         seg = {"start": 0.0, "end": 3.0, "text": "texte", "speaker": "S0"}
         out, stats = resegment_segments([seg])
-        self.assertEqual(out, [seg])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["text"], seg["text"])
+        self.assertEqual(out[0]["speaker"], seg["speaker"])
+        self.assertEqual(out[0]["chars"], len(seg["text"]))
         self.assertEqual(stats["no_words"], 1)
 
 
