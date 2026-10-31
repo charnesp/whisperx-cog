@@ -106,10 +106,23 @@ class TestImageDiet(unittest.TestCase):
         )
 
     def test_loader_finds_the_base_cuda(self):
+        run = "\n".join(self.cfg["build"]["run"])
+        self.assertIn(
+            "/etc/ld.so.conf.d/", run,
+            "with the nvidia-* wheels removed, the loader must be pointed at the "
+            "base CUDA through a loader configuration file",
+        )
+        self.assertIn("/usr/local/cuda/lib64", run)
+        self.assertIn("ldconfig", run)
+
+    def test_environment_declares_no_variable_cog_refuses(self):
+        """cog rejects LD_LIBRARY_PATH in `environment` (measured 2026-10-31:
+        'environment variable "LD_LIBRARY_PATH" is not allowed'), which failed the
+        image build. The loader is configured in `run` instead."""
         env = self.cfg["environment"]
-        self.assertTrue(
-            any(e.startswith("LD_LIBRARY_PATH=") and "/usr/local/cuda/lib64" in e for e in env),
-            "with the nvidia-* wheels removed, the loader must be pointed at the base CUDA",
+        self.assertFalse(
+            any(e.startswith("LD_LIBRARY_PATH=") for e in env),
+            "LD_LIBRARY_PATH in environment makes cog refuse the build",
         )
 
     def test_requirements_still_pin_torch_and_forbid_the_ui_stack(self):

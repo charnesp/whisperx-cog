@@ -23,7 +23,10 @@ build:
     # the two wheels the base lacks (cusparselt, cufile) — it aborts loudly if
     # either is missing, because libtorch_{python,cuda}.so need them at import.
     - python3 /src/scripts/image_diet.py --apply
-    - ldconfig
+    # The loader must find the base CUDA libraries once torch's own copies are
+    # gone. An `environment: LD_LIBRARY_PATH=...` entry is refused by cog
+    # ("environment variable is not allowed"), hence the loader configuration file.
+    - printf '/usr/local/cuda/lib64\n/usr/lib/x86_64-linux-gnu\n' > /etc/ld.so.conf.d/zz-cuda-runtime.conf && ldconfig
     # Build-time guard: the diet removed libraries, so prove the import chain still
     # loads (no GPU needed: the point is the loader, not the device).
     - python3 -c "import torch, faster_whisper, qwen_asr; assert torch.__version__.startswith('2.8'), torch.__version__; print('import ok', torch.__version__, torch.version.cuda)"
@@ -42,7 +45,4 @@ environment:
   # on diarize (first run). Provisioned models are resolved from /models by
   # model_paths; anything missing downloads from HF with the container token.
   - "PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1"
-  # torch resolves cudart/cublas/cudnn/nccl from the base image once its own
-  # copies are removed by the diet step.
-  - "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
 predict: "predict.py:Predictor"
