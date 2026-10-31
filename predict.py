@@ -21,6 +21,7 @@ from whisperx.audio import N_SAMPLES, log_mel_spectrogram
 import whisperx
 from whisperx.diarize import DiarizationPipeline
 from json_sanitize import sanitize_error_message, sanitize_for_json
+from segment_resegmentation import resegment_result
 from hf_token import require_diarization_token
 from model_paths import (
     resolve_model_dir,
@@ -35,6 +36,11 @@ import tempfile
 import time
 import torch
 import ffmpeg
+
+# Module logger: a failed prediction keeps its traceback here. The client only
+# receives a sanitised one-line message, so without this the real cause is lost
+# (measured: a KeyError deep in the model path left nothing in the container log).
+_LOG = logging.getLogger(__name__)
 
 import qwen_remote
 import qwen_remote_client
@@ -385,6 +391,11 @@ class Predictor(BasePredictor):
             )
         except Exception as e:
             safe_msg = sanitize_error_message(str(e))
+            # Keep the traceback server-side: the client message stays a sanitised
+            # one-liner, but an operator can read the real cause in the container log.
+            _LOG.error(
+                "prediction failed: %s: %s", type(e).__name__, safe_msg, exc_info=True
+            )
             raise RuntimeError(f"Prediction failed: {type(e).__name__}: {safe_msg}") from None
 
     def _run_predict(
@@ -621,6 +632,26 @@ class Predictor(BasePredictor):
                     min_speakers,
                     max_speakers,
                 )
+                # Rebuild segments from speaker turns: diarization labels each
+                # audio window with its dominant speaker, so a 30 s window where
+                # three people speak stays a single turn. The words already carry
+                # their speaker. On any failure the raw segments are kept and the
+                # reason is logged: a prediction must never fail for this.
+                try:
+                    stats: dict = {}
+                    result = resegment_result(result, stats)
+                    if stats.get("ambiguous"):
+                        print(
+                            "segment resegmentation: "
+                            f"{stats['ambiguous']}/{stats['in']} windows kept whole "
+                            "(word/text alignment not exact)",
+                            flush=True,
+                        )
+                except Exception as exc:  # noqa: BLE001 - keep the prediction alive
+                    print(
+                        f"segment resegmentation skipped: {type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
 
             if debug:
                 print(

@@ -65,9 +65,11 @@ _FAKE_AUDIO = [0.0] * 160000  # 10 s at 16 kHz
 WINDOWS = [(0.0, 2.0, [0.1, 0.2]), (2.5, 4.0, [0.3, 0.4])]
 WINDOW_TEXTS = ["bonjour", "le monde"]
 WINDOW_LANGS = ["fr", "fr"]  # server-detected language per window (VAD order)
+# `chars` is part of the segment contract: resegmentation returns every segment
+# with its character count, including segments it did not split.
 EXPECTED_SEGMENTS = [
-    {"text": "bonjour", "start": 0.0, "end": 2.0},
-    {"text": "le monde", "start": 2.5, "end": 4.0},
+    {"text": "bonjour", "start": 0.0, "end": 2.0, "chars": 7},
+    {"text": "le monde", "start": 2.5, "end": 4.0, "chars": 8},
 ]
 
 def _asr_qwen_stub():
@@ -102,7 +104,8 @@ QWEN_ARGS = dict(
 
 
 def _local_result():
-    return {"language": "fr", "segments": [{"text": "local", "start": 0.0, "end": 1.0}]}
+    return {"language": "fr",
+            "segments": [{"text": "local", "start": 0.0, "end": 1.0, "chars": 5}]}
 
 
 class _RemoteBranchBase(unittest.TestCase):
@@ -359,3 +362,51 @@ class TestEnableQwenStaysBridgeOnly(_RemoteBranchBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResegmentationIsGuarded(_RemoteBranchBase):
+    """The re-segmentation must never be able to fail a prediction, and a run
+    where it did nothing must not look like a run where it worked."""
+
+    RAW_SEGMENTS = [
+        {"text": "bonjour", "start": 0.0, "end": 2.0},
+        {"text": "le monde", "start": 2.5, "end": 4.0},
+    ]
+
+    def _run(self):
+        """Patches stay alive until the test ends: the prediction runs after this
+        method returns, so they cannot be scoped to it."""
+        fake_model = types.SimpleNamespace(transcribe=lambda *a, **k: _local_result())
+        self._stack([
+            *self._common_patches(),
+            mock.patch.object(_asr_qwen_stub(), "load_model", return_value=fake_model),
+            mock.patch.object(predict, "align_qwen", side_effect=lambda a, r, d: r),
+            mock.patch.object(predict, "diarize", side_effect=lambda *a, **k: a[1]),
+            mock.patch.object(predict, "qwen_remote_windows", return_value=list(WINDOWS)),
+            mock.patch.object(
+                predict.qwen_remote_client, "transcribe_windows_meta",
+                return_value=(list(WINDOW_TEXTS), list(WINDOW_LANGS)),
+            ),
+        ])
+        return self._predictor(REMOTE_CONFIG)
+
+    def test_a_broken_resegmentation_returns_the_raw_segments(self):
+        with mock.patch.object(predict, "resegment_result", side_effect=RuntimeError("boom")):
+            output = self._run()._run_predict(**QWEN_ARGS)
+        self.assertEqual(list(output.segments), self.RAW_SEGMENTS)
+
+    def test_windows_left_whole_are_logged(self):
+        import io
+        from contextlib import redirect_stdout
+
+        def fake_resegment(result, stats=None):
+            if stats is not None:
+                stats.update({"in": 2, "ambiguous": 1})
+            return result
+
+        buffer = io.StringIO()
+        with mock.patch.object(predict, "resegment_result", side_effect=fake_resegment):
+            with redirect_stdout(buffer):
+                self._run()._run_predict(**QWEN_ARGS)
+        self.assertIn("kept whole", buffer.getvalue())
+        self.assertIn("1/2", buffer.getvalue())

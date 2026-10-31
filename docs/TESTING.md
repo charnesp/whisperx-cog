@@ -29,8 +29,11 @@ Run `make -f Makefile.harness check` (or `ci`) after every RED/GREEN cycle and b
 
 - stdlib `unittest` only (no pytest)
 - bridge tests inject `urlopen_fn`; never start Cog or WhisperX in unit tests
-- test venv (`/opt/data/tmp/e5finish-venv`) needs `pyyaml` + `requests`:
-  `requests` is used by `scripts/lock_audit.py` (and its tests)
+- test venv needs `pyyaml` + `requests` + `numpy`:
+  `requests` is used by `scripts/lock_audit.py` (and its tests); `numpy` is imported
+  by `tests/test_qwen_split_energy_vectorised.py` and the `tests/test_qwen_remote_*.py`
+  files, and its absence kept CI red from 2026-10-20 to 2026-10-31;
+  `make ci` also needs `ruff` and `pip-audit` on PATH
 
 ## OpenSpec
 
