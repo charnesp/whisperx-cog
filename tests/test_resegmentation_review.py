@@ -32,7 +32,7 @@ class MergeKeepsNormalSegments(unittest.TestCase):
             t = k * 30.0
             windows.append(window(
                 f"phrase {k}",
-                [word(f"phrase", t, t + 1.0, "S0"), word(str(k), t + 1.0, t + 2.0, "S0")],
+                [word("phrase", t, t + 1.0, "S0"), word(str(k), t + 1.0, t + 2.0, "S0")],
             ))
         out, _ = resegment_segments(windows)
         self.assertEqual(len(out), 5, "five monologue windows must stay five segments")
